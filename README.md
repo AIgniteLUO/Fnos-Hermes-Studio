@@ -50,18 +50,31 @@ fnos-hermes-studio/
 │   └── uninstall                    # 卸载时是否删除数据
 ├── preview/                         # 应用中心预览图
 ├── scripts/build-fpk.sh             # 本地纯 tar+gzip 构建（无需 fnpack）
-└── .github/workflows/build.yml      # CI：用官方 fnpack 构建并发布 Draft Release
+└── .github/workflows/build.yml      # CI：push 到 main 自动构建并发布滚动 latest 预发布版本
 ```
 
 ## 仓库说明（与构建相关）
 
-- `app/node/`（bundled 的 hermes-web-ui node_modules）**不纳入 git**（见 `.gitignore`），因为体积大且 GitHub 拒绝 >100MB 文件。本地 clone 后执行 `bash scripts/build-fpk.sh dist` 时，`install_callback` 会自动回退到 `npm install -g hermes-web-ui@0.6.33`，或你也可先手动放置 bundled 运行时。
-- `dist/*.fpk`、根目录 `hermes-studio.fpk`、`fnpack.exe` 等构建产物同样不入库；正式发布包请走 `.github/workflows/build.yml` 的 CI（Draft Release）。
+- `app/node/`（bundled 的 hermes-web-ui node_modules）**不纳入 git**（见 `.gitignore`），因为体积大且 GitHub 拒绝 >100MB 文件。CI 在构建前会按 `config/bootstrap/hermes-studio-version.env` 中的版本用 `npm install -g hermes-web-ui@<ver> --prefix app/node` 重新生成该目录，保证打出的 FPK 自带运行时、飞牛上离线安装。
+- `dist/*.fpk`、根目录 `hermes-studio.fpk`、`fnpack.exe` 等构建产物同样不入库；正式发布包由 `.github/workflows/build.yml` 的 CI 自动产出。
 - `scripts/` 下部分本地部署/调试脚本含 NAS 真实凭据，已被 `.gitignore` 排除，**请勿手动加入**。
 
-## 构建 FPK
+## 自动构建（CI）
+
+- **触发**：每次 `push` 到 `main`（也可手动 `workflow_dispatch` 并覆盖版本号）。
+- **产物**：
+  - 固定文件名 `fnos-hermes-studio.fpk`（始终为最新）→ 发布到滚动预发布 **Release `latest`**，每次 push 覆盖更新。
+  - 带版本号 `fnos-hermes-studio_v<version>.fpk` → 留档，版本不同则累加。
+- 下载：仓库 **Releases** 页 → `latest` 即可拿到最新 fpk（或按版本号取历史附件）。
+
+## 本地构建 FPK
 
 格式以飞牛官方文档为准：[developer.fnnas.com/docs/cli/fnpack](https://developer.fnnas.com/docs/cli/fnpack/)。`fnpack build` 会在生成 `.fpk` 前做文件与基础格式校验（manifest 必要字段、config JSON 合法、ICON 存在、`app/ cmd/ wizard/ app/{desktop_uidir}/` 存在）。
+
+> 本地构建前需先准备 bundled 运行时（否则只能安装时联网 `npm install`）：
+> ```bash
+> npm install -g hermes-web-ui@0.6.33 --prefix app/node
+> ```
 
 ### 方式一：官方 fnpack（推荐，100% 合规）
 
