@@ -2,6 +2,11 @@ name: Build fnOS Hermes Studio FPK
 
 # 每次 push 到 main 自动构建 FPK，并发布为滚动预发布版本（latest）。
 # 也可手动触发（workflow_dispatch），手动时可覆盖版本号。
+#
+# 说明：仓库不纳入 bundled 运行时 app/node（体积大 / GitHub 拒 >100MB）。
+# 打出的 FPK 在安装时由 install_callback 走 npm install 兜底安装 hermes-web-ui
+# （与已在 249 上验证可用的历史包行为一致）；如需离线安装，可在本地先
+# `npm install -g hermes-web-ui@0.6.33 --prefix app/node` 再构建。
 on:
   push:
     branches:
@@ -33,12 +38,6 @@ jobs:
       - name: Set timezone
         run: sudo timedatectl set-timezone "Asia/Shanghai"
 
-      # 提供 npm，用于重新生成 bundled 运行时 app/node（仓库不入库该目录）。
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
       - name: Get version from manifest
         id: version
         run: |
@@ -58,48 +57,38 @@ jobs:
           fi
           echo "target_version=$TARGET_VERSION" >> $GITHUB_OUTPUT
 
-      # hermes-web-ui 的 bundled 运行时（app/node/）不入库（体积大 / GitHub 拒 >100MB）。
-      # 这里按 config/bootstrap/hermes-studio-version.env 中的版本重新安装到 app/node，
-      # 使打出的 FPK 自带运行时，飞牛上安装无需联网、几秒完成。
-      - name: Regenerate bundled runtime (app/node)
+      # fnpack 为飞牛官方打包工具（从 static2.fnnas.com 下载）。CI 网络可能无法访问该
+      # CDN，因此设为「可选」：下载/校验失败时不阻断，build-fpk.sh 会自动回退到
+      # 纯 tar+gzip 构建（双层 tar.gz 格式，经真实 .fpk 样本验证与官方结构一致）。
+      - name: Install fnpack (optional; falls back to tar+gzip)
+        continue-on-error: true
         run: |
-          HERMES_VER=$(grep '^HERMES_STUDIO_VERSION' config/bootstrap/hermes-studio-version.env | awk -F'=' '{print $2}' | tr -d ' ')
-          [ -z "$HERMES_VER" ] && HERMES_VER="${{ steps.version.outputs.version }}"
-          echo "安装 hermes-web-ui@${HERMES_VER} 到 app/node ..."
-          for attempt in 1 2 3; do
-            echo "  尝试 ${attempt}/3 ..."
-            if npm install -g --no-audit --no-fund --engine-strict=false \
-                 "hermes-web-ui@${HERMES_VER}" --prefix app/node; then
-              echo "app/node 生成成功"
-              break
+          set +e
+          URL="https://static2.fnnas.com/fnpack/fnpack-1.0.4-linux-amd64"
+          for i in 1 2 3; do
+            echo "尝试下载 fnpack ($i/3)..."
+            if curl -fsSL "$URL" -o fnpack \
+               && chmod +x fnpack \
+               && mv fnpack /usr/local/bin/ \
+               && command -v fnpack >/dev/null \
+               && fnpack --version; then
+              echo "fnpack 就绪"
+              exit 0
             fi
-            echo "  第 ${attempt} 次失败，重试..."
-            rm -rf app/node
-            sleep 5
+            rm -f fnpack
+            sleep 3
           done
-          if [ ! -e "app/node/lib/node_modules/hermes-web-ui" ]; then
-            echo "::error:: 无法生成 bundled 运行时 app/node，FPK 将缺少离线运行时"
-            exit 1
-          fi
-          ls -la app/node/bin/ | head
-
-      - name: Install fnpack
-        run: |
-          FNPACK_URL="https://static2.fnnas.com/fnpack/fnpack-1.0.4-linux-amd64"
-          curl -fsSL "$FNPACK_URL" -o fnpack
-          chmod +x fnpack
-          mv fnpack /usr/local/bin/
-          fnpack --version
+          echo "::warning:: fnpack 不可用，将使用纯 tar+gzip 兜底构建"
 
       - name: Create dist directory
         run: mkdir -p dist
 
-      # 复用本地已验证的构建脚本（优先 fnpack，并自动补 manifest.checksum）。
+      # 复用本地已验证的构建脚本（优先 fnpack，未找到则纯 tar+gzip，并自动补 manifest.checksum）。
       - name: Build FPK
         id: build
         run: |
           if ! bash scripts/build-fpk.sh dist; then
-            echo "::error:: fnpack 打包失败"
+            echo "::error:: FPK 打包失败"
             exit 1
           fi
           TARGET_NAME="fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk"
@@ -111,21 +100,27 @@ jobs:
           echo "打包成功：$TARGET_NAME ($SIZE)"
           echo "fpks=$TARGET_NAME" >> $GITHUB_OUTPUT
 
-      # 校验 FPK 确实包含 bundled 运行时（避免装上去找不到 HERMES_BIN）。
-      - name: Verify FPK contents
+      # 校验 FPK 基本结构（manifest / cmd / wizard / app 必须存在）。
+      # 不强制要求 app/node：默认 FPK 不含 bundled 运行时，安装时由 install_callback
+      # 走 npm install 兜底（与历史可用包一致）。
+      - name: Verify FPK structure
         run: |
           FPK="dist/fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk"
-          echo "校验 $FPK 是否包含 app/node ..."
+          echo "校验 $FPK 基本结构 ..."
+          for need in '^manifest$' '^cmd/' '^wizard/' '^app/'; do
+            if ! tar tzf "$FPK" | grep -qE "$need"; then
+              echo "::error:: FPK 缺少必要内容: $need"
+              exit 1
+            fi
+          done
+          echo "✅ 基本结构完整 (manifest / cmd / wizard / app)"
           if tar tzf "$FPK" | grep -q '^app/node/lib/node_modules/hermes-web-ui/'; then
-            echo "✅ app/node 已包含"
+            echo "ℹ️ 检测到 bundled 运行时 app/node（离线安装）"
           else
-            echo "::error:: FPK 缺少 app/node，安装后将无法离线运行"
-            exit 1
+            echo "ℹ️ 未包含 app/node，安装时将走 npm install 兜底（需联网）"
           fi
-          echo "校验 manifest / cmd / wizard 是否存在 ..."
-          tar tzf "$FPK" | grep -E '^(manifest|cmd/|wizard/|app/)' | head -3
 
-      # 额外生成一个固定文件名，便于"总是下载最新版"。
+      # 额外生成一个固定文件名，便于「总是下载最新版」。
       - name: Copy to rolling asset name
         run: |
           cp "dist/fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk" \
@@ -161,4 +156,4 @@ jobs:
           echo "|------|------|-----------|" >> $GITHUB_STEP_SUMMARY
           echo "| fnOS Hermes Studio | v${{ steps.target_version.outputs.target_version }} | fnos-hermes-studio_v${{ steps.target_version.outputs.target_version }}.fpk |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "滚动最新版见 Release **latest** 的附件 `fnos-hermes-studio.fpk`。" >> $GITHUB_STEP_SUMMARY
+          echo "滚动最新版见 Release **latest** 的附件 \`fnos-hermes-studio.fpk\`。" >> $GITHUB_STEP_SUMMARY

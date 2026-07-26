@@ -2,7 +2,7 @@
 
 将 [EKKOLearnAI/hermes-studio](https://github.com/EKKOLearnAI/hermes-studio) 打包为飞牛 fnOS 可安装的 **FPK** 应用，保持原版 Web UI 模样，**不使用 Docker**，采用 **npm 原生依赖 + bundled node_modules** 方式安装。
 
-- 应用本体：`hermes-web-ui`（版本 `0.6.33`，已预装进 FPK 的 `app/node/`）
+- 应用本体：`hermes-web-ui`（版本 `0.6.33`）。FPK **默认不含** bundled 运行时 `app/node/`；安装时由 `install_callback` 走 `npm install -g hermes-web-ui@0.6.33` 兜底安装（与已在 249 上验证可用的历史包行为一致）。如需离线安装，可在本地先 `npm install -g hermes-web-ui@0.6.33 --prefix app/node` 再构建，FPK 会优先复制 bundled 运行时。
 - 包版本（迭代号）：`0.6.33-17`
 - 平台：`x86_64`（bundled 原生模块绑定 Linux x64 / Node 24 ABI）
 - 运行时依赖：`install_dep_apps=nodejs_v24`，由 fnOS 自动安装 Node.js v24
@@ -55,7 +55,7 @@ fnos-hermes-studio/
 
 ## 仓库说明（与构建相关）
 
-- `app/node/`（bundled 的 hermes-web-ui node_modules）**不纳入 git**（见 `.gitignore`），因为体积大且 GitHub 拒绝 >100MB 文件。CI 在构建前会按 `config/bootstrap/hermes-studio-version.env` 中的版本用 `npm install -g hermes-web-ui@<ver> --prefix app/node` 重新生成该目录，保证打出的 FPK 自带运行时、飞牛上离线安装。
+- `app/node/`（bundled 的 hermes-web-ui node_modules）**不纳入 git**（见 `.gitignore`），因为体积大且 GitHub 拒绝 >100MB 文件。CI 默认**不打包**该目录，FPK 在安装时由 `install_callback` 走 `npm install` 兜底（需联网）；若要离线安装，本地先 `npm install -g hermes-web-ui@0.6.33 --prefix app/node` 再构建即可，FPK 会优先复制 bundled 运行时。
 - `dist/*.fpk`、根目录 `hermes-studio.fpk`、`fnpack.exe` 等构建产物同样不入库；正式发布包由 `.github/workflows/build.yml` 的 CI 自动产出。
 - `scripts/` 下部分本地部署/调试脚本含 NAS 真实凭据，已被 `.gitignore` 排除，**请勿手动加入**。
 
@@ -71,7 +71,8 @@ fnos-hermes-studio/
 
 格式以飞牛官方文档为准：[developer.fnnas.com/docs/cli/fnpack](https://developer.fnnas.com/docs/cli/fnpack/)。`fnpack build` 会在生成 `.fpk` 前做文件与基础格式校验（manifest 必要字段、config JSON 合法、ICON 存在、`app/ cmd/ wizard/ app/{desktop_uidir}/` 存在）。
 
-> 本地构建前需先准备 bundled 运行时（否则只能安装时联网 `npm install`）：
+> 本地构建默认不含 bundled 运行时，安装时由 `install_callback` 自动 `npm install`（需联网）。
+> 若需离线安装，构建前先准备运行时：
 > ```bash
 > npm install -g hermes-web-ui@0.6.33 --prefix app/node
 > ```
