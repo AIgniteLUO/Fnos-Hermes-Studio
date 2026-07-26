@@ -100,21 +100,26 @@ jobs:
           echo "打包成功：$TARGET_NAME ($SIZE)"
           echo "fpks=$TARGET_NAME" >> $GITHUB_OUTPUT
 
-      # 校验 FPK 基本结构（manifest / cmd / wizard / app 必须存在）。
+      # 校验 FPK 基本结构（外层含 manifest / cmd/ / wizard/ / app.tgz 必须存在）。
       # 不强制要求 app/node：默认 FPK 不含 bundled 运行时，安装时由 install_callback
       # 走 npm install 兜底（与历史可用包一致）。
       - name: Verify FPK structure
         run: |
           FPK="dist/fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk"
           echo "校验 $FPK 基本结构 ..."
-          for need in '^manifest$' '^cmd/' '^wizard/' '^app/'; do
+          for need in '^manifest$' '^cmd/' '^wizard/' '^app.tgz$'; do
             if ! tar tzf "$FPK" | grep -qE "$need"; then
               echo "::error:: FPK 缺少必要内容: $need"
               exit 1
             fi
           done
-          echo "✅ 基本结构完整 (manifest / cmd / wizard / app)"
-          if tar tzf "$FPK" | grep -q '^app/node/lib/node_modules/hermes-web-ui/'; then
+          echo "✅ 基本结构完整 (manifest / cmd / wizard / app.tgz)"
+          # 进一步确认 app.tgz 内含 app 运行时入口，并判断是否有 bundled app/node
+          INNER=$(tar xzf "$FPK" -O app.tgz 2>/dev/null | tar tzf - 2>/dev/null)
+          echo "$INNER" | grep -qE '^app/(bin|skills|ui)/' \
+            && echo "ℹ️ app.tgz 内含 app/bin|skills|ui" \
+            || echo "⚠️ app.tgz 结构异常"
+          if echo "$INNER" | grep -q '^app/node/lib/node_modules/hermes-web-ui/'; then
             echo "ℹ️ 检测到 bundled 运行时 app/node（离线安装）"
           else
             echo "ℹ️ 未包含 app/node，安装时将走 npm install 兜底（需联网）"
