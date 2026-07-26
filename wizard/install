@@ -15,5 +15,24 @@
                 "helpText": "<br>安装完成后，点击桌面图标在浏览器打开原版 Web UI，使用默认账号 <b>admin / 123456</b> 登录，随后在「设置」中配置模型 API Key 即可使用。"
             }
         ]
+    },
+    {
+        "stepTitle": "微信渠道访问控制",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "<br>默认情况下，微信渠道的私聊（DM）采用<b>白名单模式</b>：只有管理员在 Web UI「设置-渠道-微信」里手动添加的用户才能发消息。"
+            },
+            {
+                "type": "radio",
+                "field": "WEIXIN_OPEN_ALL_USERS",
+                "label": "是否允许所有微信用户发送消息？",
+                "initValue": "false",
+                "options": [
+                    { "label": "否，保持白名单（安全，推荐）", "value": "false" },
+                    { "label": "是，允许所有人（绕过白名单，风险自负）", "value": "true" }
+                ]
+            }
+        ]
     }
 ]

@@ -405,6 +405,62 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6b. 配置微信渠道 DM 策略（依据安装向导的安全确认开关）
+# ---------------------------------------------------------------------------
+# 默认 hermes-web-ui 的微信 DM 策略为 allowlist（白名单），非白名单用户会
+# 收到 "Unauthorized user: ... on weixin" 警告且消息被拒绝。
+# 如果用户在 wizard 中勾选"允许所有微信用户发送消息"，则写入
+# WEIXIN_DM_POLICY=open + WEIXIN_ALLOW_ALL_USERS=true 到 ~/.hermes/.env。
+configure_weixin_policy() {
+    local hermes_env="${DATA_DIR}/.hermes/.env"
+
+    is_truthy() {
+        case "${1:-}" in
+            [Tt]rue|[Yy]es|[Oo]n|1) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+
+    if is_truthy "${WEIXIN_OPEN_ALL_USERS}"; then
+        log_msg "WEIXIN_OPEN_ALL_USERS enabled -> writing open DM policy to ${hermes_env}"
+        mkdir -p "$(dirname "${hermes_env}")"
+        [ -f "${hermes_env}" ] || touch "${hermes_env}"
+
+        # 安全注释头（幂等，只有不存在才添加）
+        if ! grep -qF "# Weixin DM policy configured by fnOS installer" "${hermes_env}" 2>/dev/null; then
+            cat >> "${hermes_env}" <<'ENV_EOF'
+
+# Weixin DM policy configured by fnOS installer
+# WARNING: open policy allows ANY weixin user to message this bot.
+ENV_EOF
+        fi
+
+        # 更新或追加两条关键配置
+        for kv in 'WEIXIN_DM_POLICY=open' 'WEIXIN_ALLOW_ALL_USERS=true'; do
+            local key="${kv%%=*}"
+            if grep -qE "^[[:space:]]*${key}=" "${hermes_env}" 2>/dev/null; then
+                sed -i -E "s|^[[:space:]]*${key}=.*|${kv}|" "${hermes_env}" 2>/dev/null || \
+                    log_msg "WARNING: failed to update ${key} in ${hermes_env}"
+            else
+                echo "${kv}" >> "${hermes_env}" 2>/dev/null || \
+                    log_msg "WARNING: failed to append ${kv} to ${hermes_env}"
+            fi
+        done
+
+        if [ -n "${TRIM_USERNAME}" ]; then
+            chown -R "${TRIM_USERNAME}:${TRIM_USERNAME}" "$(dirname "${hermes_env}")" 2>>"${LOG_FILE}" || \
+                log_msg "WARNING: chown $(dirname "${hermes_env}") failed"
+        fi
+        chmod 600 "${hermes_env}" 2>/dev/null || true
+        log_msg "Weixin DM policy set to OPEN (all users allowed)"
+    else
+        log_msg "WEIXIN_OPEN_ALL_USERS not set or false -> keeping default allowlist DM policy"
+    fi
+}
+
+configure_weixin_policy
+
+# ---------------------------------------------------------------------------
 # 6. 双保险：修正外层生命周期 cmd/main 的 HERMES_BIN 路径
 # ---------------------------------------------------------------------------
 # fnOS 在升级安装时偶尔不会覆盖 /var/apps/hermes-studio/cmd/main。
