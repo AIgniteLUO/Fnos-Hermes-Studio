@@ -207,11 +207,16 @@ log_msg "hermes-web-ui installed version: ${ACTUAL_VER}"
 # ---------------------------------------------------------------------------
 HERMES_AGENT_ROOT="${TRIM_PKGHOME}/hermes-agent"
 HERMES_HOME="${TRIM_PKGHOME}/hermes-home"
+BUNDLED_AGENT_SRC="${APP_DIR}/hermes-agent-src"
 
 # Hermes Agent 官方 install.sh 需要下载 uv、git clone 仓库并 pip install，
 # 全程在 249 上耗时 3-5 分钟，远超 fnOS install_callback 超时（约 1-2 分钟）。
 # 因此改为"前台准备 + 后台完成"：install_callback 立即返回成功，避免安装被
 # fnOS 中断；cmd/main start 会检测 Agent 是否就绪，必要时等待后台安装完成。
+#
+# 额外问题：很多 NAS 无法稳定连接 GitHub，git clone 会报 GnuTLS recv error，
+# 导致 Agent 一直卡在克隆阶段、应用显示 starting。如果 FPK 内嵌了源码包
+# app/hermes-agent-src，则直接复制到目标目录并跳过网络 clone/fetch。
 ensure_hermes_agent_background() {
     if [ -x "${HERMES_AGENT_ROOT}/venv/bin/hermes" ]; then
         log_msg "Hermes Agent already installed at ${HERMES_AGENT_ROOT}"
@@ -255,6 +260,15 @@ ensure_hermes_agent_background() {
         return 0
     fi
 
+    # 检测是否有内嵌的离线源码包
+    OFFLINE_SRC_FLAG="0"
+    if [ -d "${BUNDLED_AGENT_SRC}/.git" ] || [ -f "${BUNDLED_AGENT_SRC}/pyproject.toml" ]; then
+        log_msg "Bundled Hermes Agent source found at ${BUNDLED_AGENT_SRC}"
+        OFFLINE_SRC_FLAG="1"
+    else
+        log_msg "No bundled Hermes Agent source, will clone from GitHub"
+    fi
+
     # 生成后台安装脚本。使用双引号 here-doc，让路径在生成时展开并硬编码到
     # 脚本中，避免 nohup 启动时环境变量丢失。
     BG_SCRIPT="${HERMES_HOME}/.install-agent.sh"
@@ -270,6 +284,8 @@ set -e
 AGENT_ROOT="${HERMES_AGENT_ROOT}"
 HERMES_HOME="${HERMES_HOME}"
 INSTALLER="/tmp/hermes-agent-install.sh"
+BUNDLED_AGENT_SRC="${BUNDLED_AGENT_SRC}"
+OFFLINE_SRC_FLAG="${OFFLINE_SRC_FLAG}"
 LOG_FILE="${HERMES_HOME}/install-agent.log"
 MARKER="${HERMES_HOME}/.install-agent.marker"
 PID_FILE="${HERMES_HOME}/.install-agent.pid"
@@ -280,6 +296,7 @@ rm -f "\${MARKER}"
     echo "=== Hermes Agent background install started at \$(date '+%Y-%m-%d %H:%M:%S') ==="
     echo "AGENT_ROOT=\${AGENT_ROOT}"
     echo "HERMES_HOME=\${HERMES_HOME}"
+    echo "OFFLINE_SRC_FLAG=\${OFFLINE_SRC_FLAG}"
 
     if [ ! -s "\${INSTALLER}" ]; then
         echo "ERROR: installer not found at \${INSTALLER}"
@@ -293,6 +310,29 @@ rm -f "\${MARKER}"
 
     # install.sh 不允许目标目录已存在且非 git 仓库，先清理
     rm -rf "\${AGENT_ROOT}"
+
+    # 如果 FPK 内嵌了源码包，直接复制过去并标记离线安装，跳过 git clone
+    if [ "\${OFFLINE_SRC_FLAG}" = "1" ] && [ -d "\${BUNDLED_AGENT_SRC}" ]; then
+        echo ">>> Using bundled Hermes Agent source (offline), copying to \${AGENT_ROOT} ..."
+        mkdir -p "\$(dirname "\${AGENT_ROOT}")"
+        if ! cp -a "\${BUNDLED_AGENT_SRC}" "\${AGENT_ROOT}"; then
+            echo "ERROR: failed to copy bundled source to \${AGENT_ROOT}"
+            exit 1
+        fi
+        # 确保它是一个可识别的 git 仓库（install.sh 的离线模式会检查 .git）
+        if [ ! -d "\${AGENT_ROOT}/.git" ]; then
+            echo "Initializing git repo in bundled source ..."
+            cd "\${AGENT_ROOT}"
+            git init -q
+            git config user.email "fnos@local"
+            git config user.name "fnOS Installer"
+            git add -A
+            git commit -q -m "offline bundle"
+            git remote add origin "https://github.com/NousResearch/hermes-agent.git" 2>/dev/null || true
+        fi
+        export HERMES_OFFLINE_INSTALL=1
+        echo "Bundled source ready, HERMES_OFFLINE_INSTALL=1"
+    fi
 
     if ! bash "\${INSTALLER}" --non-interactive --skip-setup \\
             --dir "\${AGENT_ROOT}" \\

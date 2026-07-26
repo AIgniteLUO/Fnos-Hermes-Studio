@@ -1170,6 +1170,17 @@ show_manual_install_hint() {
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
 
+    # Offline bundle support (injected by fnOS FPK installer): if the installer
+    # placed a pre-packaged source tree at INSTALL_DIR, skip all network clone/
+    # fetch/pull operations and use it directly. This fixes installs on NAS or
+    # hosts where GitHub is unreachable or flaky.
+    if [ "${HERMES_OFFLINE_INSTALL:-}" = "1" ] && [ -d "$INSTALL_DIR/.git" ]; then
+        log_info "Offline source bundle detected at $INSTALL_DIR, skipping network clone/fetch"
+        cd "$INSTALL_DIR"
+        log_success "Repository ready (offline bundle)"
+        return 0
+    fi
+
     # An interrupted previous clone leaves a .git with no initial commit, where
     # the update path's `git stash` / `git checkout` abort with "You do not
     # have the initial commit yet" and fail the install (#40998). Move such a

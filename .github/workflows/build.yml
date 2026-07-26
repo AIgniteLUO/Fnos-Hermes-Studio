@@ -83,6 +83,47 @@ jobs:
       - name: Create dist directory
         run: mkdir -p dist
 
+      # Hermes Agent 官方 install.sh 默认 git clone NousResearch/hermes-agent。
+      # 大量 NAS 无法稳定连接 GitHub，导致安装后 Agent 启动不了。
+      # CI 在 GitHub 内网下载源码并嵌入 FPK，install_callback 会优先用本地包
+      # 并跳过网络 clone。
+      # Hermes Agent 离线源码为 v0.6.33-19 的核心修复点：若下载/解压失败则直接
+      # 中止构建，绝不能发布一个不含离线源码的 v19（那等于没修）。
+      - name: Prepare Hermes Agent offline source
+        run: |
+          set -e
+          if [ -f "app/hermes-agent-src/.offline-bundle" ] && [ -f "app/hermes-agent-src/pyproject.toml" ]; then
+            echo "Hermes Agent 离线源码包已存在，跳过下载"
+            exit 0
+          fi
+          echo "下载 Hermes Agent 源码包..."
+          rm -rf app/hermes-agent-src /tmp/ha.tar.gz /tmp/ha-extract
+          mkdir -p /tmp/ha-extract
+          for i in 1 2 3; do
+            echo "  尝试下载 ($i/3)..."
+            if curl -fsSL --max-time 600 "https://api.github.com/repos/NousResearch/hermes-agent/tarball/main" -o /tmp/ha.tar.gz; then
+              break
+            fi
+            echo "  下载失败，重试..."
+            sleep 5
+          done
+          [ -s /tmp/ha.tar.gz ] || { echo "::error:: Hermes Agent 源码包下载失败（GitHub 网络问题），中止构建"; exit 1; }
+          mkdir -p app/hermes-agent-src
+          tar -xzf /tmp/ha.tar.gz -C /tmp/ha-extract --strip-components=1
+          mv /tmp/ha-extract/* app/hermes-agent-src/
+          [ -f "app/hermes-agent-src/pyproject.toml" ] || { echo "::error:: 解压后未找到 pyproject.toml，源码包异常"; exit 1; }
+          (
+            cd app/hermes-agent-src
+            git init -q
+            git config user.email "ci@local"
+            git config user.name "CI Builder"
+            git add -A
+            git commit -q -m "offline bundle"
+          )
+          touch app/hermes-agent-src/.offline-bundle
+          echo "离线源码包准备完成"
+          du -sh app/hermes-agent-src
+
       # 复用本地已验证的构建脚本（优先 fnpack，未找到则纯 tar+gzip，并自动补 manifest.checksum）。
       - name: Build FPK
         id: build
@@ -124,6 +165,11 @@ jobs:
           else
             echo "ℹ️ 未包含 app/node，安装时将走 npm install 兜底（需联网）"
           fi
+          if echo "$INNER" | grep -q '^app/hermes-agent-src/pyproject.toml$'; then
+            echo "✅ 检测到 Hermes Agent 离线源码包，安装时将跳过 git clone"
+          else
+            echo "⚠️ 未包含 Hermes Agent 离线源码包，安装时仍会尝试 git clone"
+          fi
 
       # 额外生成一个固定文件名，便于「总是下载最新版」。
       - name: Copy to rolling asset name
@@ -152,6 +198,45 @@ jobs:
 
             > ⚠️ 这是滚动预发布版本，每次 push 到 main 会覆盖 `fnos-hermes-studio.fpk`。
             > 固定版本请下载带版本号的附件 `fnos-hermes-studio_v${{ steps.target_version.outputs.target_version }}.fpk`。
+
+      # 每次 push 若 manifest 版本号较上次有新值，则额外发布一个「稳定版」Release，
+      # 把带版本号的 fpk 作为附件（用户原需求：fpk 作为 Release 附件）。
+      # 已存在同名稳定版则跳过，保证幂等、不重复建版。
+      - name: Publish stable release (if new version)
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="v${{ steps.target_version.outputs.target_version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "稳定版 $TAG 已存在，跳过"
+            exit 0
+          fi
+          ASSET="dist/fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk"
+          [ -f "$ASSET" ] || { echo "::error:: 找不到 $ASSET"; exit 1; }
+          cat > /tmp/relnotes.md <<'NOTE'
+          Hermes Studio for fnOS — 稳定版 v${{ steps.target_version.outputs.target_version }}
+
+          ## 本次更新（v0.6.33-19）
+          - 离线安装 Hermes Agent：FPK 内嵌 hermes-agent 源码包，安装时跳过 GitHub git clone，
+            修复大量 NAS 因网络不稳（GnuTLS recv error）导致"安装完启动不了"的问题。
+          - 微信 DM 策略默认白名单，安装向导可一键开放给所有用户
+            （WEIXIN_DM_POLICY=open + WEIXIN_ALLOW_ALL_USERS=true）。
+
+          ## 安装说明
+          1. 飞牛应用中心 -> 手动安装 -> 选择本 fpk。
+          2. 安装后首次启动会自动在后台安装 Hermes Agent（约 1-3 分钟），请稍候。
+          3. 默认监听 8648 端口，点击应用图标在浏览器打开。
+
+          固定版本请从本 Release 附件下载 fnos-hermes-studio_v${{ steps.target_version.outputs.target_version }}.fpk；
+          最新滚动版见 Release latest。
+          NOTE
+          gh release create "$TAG" \
+            --title "Hermes Studio v${{ steps.target_version.outputs.target_version }}" \
+            --notes-file /tmp/relnotes.md \
+            "$ASSET"
+          echo "已发布稳定版 $TAG"
 
       - name: Build Summary
         run: |

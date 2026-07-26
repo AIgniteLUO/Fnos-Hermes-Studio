@@ -5,6 +5,10 @@ dist/
 hermes-studio.fpk
 # bundled hermes-web-ui node_modules，本地构建时存在，不入库
 app/node/
+# Hermes Agent 离线源码包，构建时下载/准备，不入库
+app/hermes-agent-src/
+.hermes-agent.tar.gz
+.ha-extract/
 # 官方构建工具二进制
 fnpack.exe
 app.tgz

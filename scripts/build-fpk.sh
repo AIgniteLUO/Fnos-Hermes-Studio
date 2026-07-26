@@ -27,6 +27,85 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
+# ── 准备 Hermes Agent 离线源码包（可选但强烈建议） ──
+# 很多 NAS 无法稳定连接 GitHub，安装时 git clone 会失败，导致应用启动不了。
+# 构建时把源码包嵌入 FPK，install_callback 会优先用它而跳过网络 clone。
+# 该目录不入 git（见 .gitignore），每次构建时按需下载/复用。
+ensure_hermes_agent_src() {
+    local src_dir="$ROOT/app/hermes-agent-src"
+    local marker="$src_dir/.offline-bundle"
+    local tmp_tar="$ROOT/.hermes-agent.tar.gz"
+
+    # 如果用户已手动放置源码包，直接复用
+    if [ -d "$src_dir" ] && [ -f "$src_dir/pyproject.toml" ]; then
+        if [ -f "$marker" ]; then
+            echo "使用已缓存的 Hermes Agent 源码包: $src_dir"
+        else
+            echo "使用手动放置的 Hermes Agent 源码包: $src_dir"
+        fi
+        return 0
+    fi
+
+    echo "准备 Hermes Agent 离线源码包..."
+    rm -rf "$src_dir" "$tmp_tar"
+    mkdir -p "$src_dir"
+
+    local url="https://api.github.com/repos/NousResearch/hermes-agent/tarball/main"
+    local attempt=1
+    local downloaded=false
+    while [ $attempt -le 3 ]; do
+        echo "  尝试 $attempt/3 下载 $url ..."
+        if curl -fsSL --max-time 300 "$url" -o "$tmp_tar" 2>/dev/null; then
+            downloaded=true
+            break
+        fi
+        echo "  下载失败，重试..."
+        attempt=$((attempt + 1))
+        sleep 5
+    done
+
+    if [ "$downloaded" != "true" ]; then
+        echo "WARNING: 无法下载 Hermes Agent 源码包（GitHub 网络问题）。"
+        echo "  本次构建不会包含离线源码，NAS 安装时仍会尝试 git clone。"
+        echo "  如需离线包，可手动把 hermes-agent 仓库放到 $src_dir 后再构建。"
+        rm -rf "$src_dir" "$tmp_tar"
+        return 0
+    fi
+
+    echo "  下载完成，解压中..."
+    mkdir -p "$ROOT/.ha-extract"
+    if ! tar -xzf "$tmp_tar" -C "$ROOT/.ha-extract" --strip-components=1 2>/dev/null; then
+        echo "WARNING: 解压 Hermes Agent 源码包失败"
+        rm -rf "$src_dir" "$tmp_tar" "$ROOT/.ha-extract"
+        return 0
+    fi
+
+    # 移动到目标目录
+    mv "$ROOT/.ha-extract"/* "$src_dir/" 2>/dev/null || true
+    rm -rf "$ROOT/.ha-extract" "$tmp_tar"
+
+    if [ ! -f "$src_dir/pyproject.toml" ]; then
+        echo "WARNING: 源码包解压后未找到 pyproject.toml"
+        rm -rf "$src_dir"
+        return 0
+    fi
+
+    # 初始化为 git 仓库，让 install.sh 的离线模式识别
+    (
+        cd "$src_dir"
+        git init -q 2>/dev/null || true
+        git config user.email "build@local" 2>/dev/null || true
+        git config user.name "FPK Builder" 2>/dev/null || true
+        git add -A 2>/dev/null || true
+        git commit -q -m "offline bundle" 2>/dev/null || true
+    )
+
+    touch "$marker"
+    echo "Hermes Agent 离线源码包已准备: $src_dir"
+}
+
+ensure_hermes_agent_src
+
 # ── 探测 fnpack ──
 FNPACK=""
 for cand in "$ROOT/fnpack.exe" "$ROOT/fnpack" fnpack fnpack.exe; do
