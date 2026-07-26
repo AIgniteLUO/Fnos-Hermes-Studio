@@ -1,0 +1,63 @@
+#!/bin/bash
+
+### 安装前回调 — 清理残留进程与 PID 文件，避免安装时权限设置失败
+
+# install_init 在 fnOS 调用时，数据目录（@appdata）可能尚未挂载或创建。
+# 优先只写应用自己的日志文件；/var/log/apps 在部分系统上可能不可写，会导致
+# fnOS 把日志写入失败误判为安装失败。/tmp 作为最后兜底。
+LOG_FILE="${TRIM_PKGVAR:-/tmp/hermes-studio-var}/info.log"
+TMP_LOG_FILE="/tmp/hermes-studio-install-init.log"
+
+# 必须先创建日志目录，否则 >> 重定向会报 "No such file or directory"
+mkdir -p "$(dirname "${LOG_FILE}")" "${TRIM_PKGHOME}" "${TRIM_APPDEST}" 2>/dev/null || true
+
+log_msg() {
+    local msg="$(date '+%Y-%m-%d %H:%M:%S') - [install_init] $1"
+    # 优先写入应用日志；失败则写入 /tmp；再失败则丢弃，绝不因日志写入失败退出
+    echo "$msg" >> "${LOG_FILE}" 2>/dev/null || \
+    echo "$msg" >> "${TMP_LOG_FILE}" 2>/dev/null || \
+    true
+}
+
+log_msg "=== install_init start ==="
+log_msg "TRIM_APPDEST=${TRIM_APPDEST}"
+log_msg "TRIM_PKGHOME=${TRIM_PKGHOME}"
+
+# 强制 kill 残留进程（包括 web-ui 主进程、gateway、bridge、MCP 子进程、watchdog）
+pkill -9 -f "bin/hermes-web-ui" 2>/dev/null || true
+pkill -9 -f "dist/server/index.js" 2>/dev/null || true
+pkill -9 -f "hermes gateway" 2>/dev/null || true
+pkill -9 -f "hermes_bridge" 2>/dev/null || true
+pkill -9 -f "hermes-studio-mcp" 2>/dev/null || true
+pkill -9 -f "mcp_stdio_watchdog" 2>/dev/null || true
+
+# 等待进程完全退出（最多 10 秒）
+_wait=0
+while [ ${_wait} -lt 10 ]; do
+    if ! pgrep -f "bin/hermes-web-ui" >/dev/null 2>&1 \
+       && ! pgrep -f "dist/server/index.js" >/dev/null 2>&1 \
+       && ! pgrep -f "hermes gateway" >/dev/null 2>&1 \
+       && ! pgrep -f "hermes_bridge" >/dev/null 2>&1 \
+       && ! pgrep -f "hermes-studio-mcp" >/dev/null 2>&1 \
+       && ! pgrep -f "mcp_stdio_watchdog" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+    _wait=$((_wait + 1))
+done
+log_msg "进程清理完成 (等待 ${_wait}s)"
+
+# 删除残留 PID 文件与 IPC socket，避免旧日志误导启动检测
+rm -f "${TRIM_PKGHOME}/data/server.pid" 2>/dev/null || true
+rm -f /tmp/hermes-agent-bridge.sock 2>/dev/null || true
+rm -f /tmp/hermes-web-ui.sock 2>/dev/null || true
+if [ -f "${TRIM_PKGHOME}/data/server.log" ]; then
+    mv -f "${TRIM_PKGHOME}/data/server.log" "${TRIM_PKGHOME}/data/server.log.old.$(date +%s)" 2>/dev/null || \
+        rm -f "${TRIM_PKGHOME}/data/server.log" 2>/dev/null || true
+fi
+
+# 额外等待 2 秒，确保文件系统释放所有句柄
+sleep 2
+
+log_msg "=== install_init end ==="
+exit 0

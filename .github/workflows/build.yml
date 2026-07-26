@@ -1,0 +1,118 @@
+name: Build fnOS Hermes Studio FPK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（格式：0.6.33-1，留空则使用 manifest 中的版本）'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: "hermes-studio"
+  MANIFEST_FILE: "manifest"
+
+jobs:
+  build-fpk:
+    runs-on: ubuntu-latest
+    outputs:
+      fpk_name: ${{ steps.build.outputs.fpks }}
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set timezone
+        run: sudo timedatectl set-timezone "Asia/Shanghai"
+
+      - name: Get version from manifest
+        id: version
+        run: |
+          VERSION=$(grep "^version" ${{ env.MANIFEST_FILE }} | awk -F'=' '{print $2}' | tr -d ' ')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "从 manifest 读取的版本号：v$VERSION"
+
+      - name: Determine target version
+        id: target_version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            TARGET_VERSION="${{ github.event.inputs.version }}"
+            echo "使用输入的版本号：v$TARGET_VERSION"
+          else
+            TARGET_VERSION="${{ steps.version.outputs.version }}"
+            echo "使用 manifest 版本号：v$TARGET_VERSION"
+          fi
+          echo "target_version=$TARGET_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Install fnpack
+        run: |
+          FNPACK_URL="https://static2.fnnas.com/fnpack/fnpack-1.0.4-linux-amd64"
+          curl -fsSL "$FNPACK_URL" -o fnpack
+          chmod +x fnpack
+          mv fnpack /usr/local/bin/
+          fnpack --version
+
+      - name: Update manifest version
+        run: |
+          VERSION="${{ steps.target_version.outputs.target_version }}"
+          sed -i "s/^version.*=/version       = $VERSION/" ${{ env.MANIFEST_FILE }}
+          grep "^version" ${{ env.MANIFEST_FILE }}
+
+      - name: Create dist directory
+        run: mkdir -p dist
+
+      - name: Build FPK (fnpack)
+        id: build
+        run: |
+          FNPACK="fnpack"
+          APP_DIR="$GITHUB_WORKSPACE"
+          cd "$APP_DIR"
+          if ! "$FNPACK" build --directory "$APP_DIR"; then
+            echo "::error:: fnpack 打包失败"
+            exit 1
+          fi
+          SOURCE_FPK="${{ env.APP_NAME }}.fpk"
+          DIST_DIR="dist"
+          TARGET_NAME="fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk"
+          if [ -f "$SOURCE_FPK" ]; then
+            mv "$SOURCE_FPK" "$DIST_DIR/$TARGET_NAME"
+            SIZE=$(du -h "$DIST_DIR/$TARGET_NAME" | cut -f1)
+            echo "打包成功：$TARGET_NAME ($SIZE)"
+            echo "fpks=$TARGET_NAME" >> $GITHUB_OUTPUT
+          else
+            echo "::error:: fnpack 未生成 FPK 文件"
+            exit 1
+          fi
+
+      - name: Create Draft Release
+        id: create_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.target_version.outputs.target_version }}"
+          FPK_NAME="fnos-${{ env.APP_NAME }}_v${VERSION}.fpk"
+          RELEASE_TAG="fnos-hermes-studio_v${VERSION}"
+          DIST_DIR="dist"
+          gh release create "$RELEASE_TAG" \
+            "$DIST_DIR/$FPK_NAME" \
+            --draft \
+            --title "$RELEASE_TAG" \
+            --notes "Hermes Studio for fnOS (npm 原生部署，非 Docker) — v${VERSION}" || exit 1
+          echo "Draft Release 已创建"
+
+      - name: Build Summary
+        run: |
+          echo "### ✅ 构建完成" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 项目 | 版本 | FPK 文件名 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| fnOS Hermes Studio | v${{ steps.target_version.outputs.target_version }} | fnos-hermes-studio_v${{ steps.target_version.outputs.target_version }}.fpk |" >> $GITHUB_STEP_SUMMARY

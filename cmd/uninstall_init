@@ -1,0 +1,8 @@
+#!/bin/bash
+
+"${TRIM_APPDEST}/cmd/main" stop 2>/dev/null || true
+
+pkill -9 -f "bin/hermes-web-ui" 2>/dev/null || true
+pkill -9 -f "dist/server/index.js" 2>/dev/null || true
+
+exit 0
