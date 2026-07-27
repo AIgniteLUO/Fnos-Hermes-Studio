@@ -1,12 +1,11 @@
 # fnOS Hermes Studio (FPK)
 
-将 [EKKOLearnAI/hermes-studio](https://github.com/EKKOLearnAI/hermes-studio) 打包为飞牛 fnOS 可安装的 **FPK** 应用，保持原版 Web UI 模样，**不使用 Docker**，采用 **npm 原生依赖 + bundled node_modules** 方式安装。
+将 [EKKOLearnAI/hermes-studio](https://github.com/EKKOLearnAI/hermes-studio) 打包为飞牛 fnOS 可安装的 **FPK** 应用，保持原版 Web UI 模样，采用 **npm 原生依赖 + bundled node_modules** 方式安装。
 
 - 应用本体：`hermes-web-ui`（版本 `0.6.33`）。FPK **默认不含** bundled 运行时 `app/node/`；安装时由 `install_callback` 走 `npm install -g hermes-web-ui@0.6.33` 兜底安装（与已在 249 上验证可用的历史包行为一致）。如需离线安装，可在本地先 `npm install -g hermes-web-ui@0.6.33 --prefix app/node` 再构建，FPK 会优先复制 bundled 运行时。
 - 包版本（迭代号）：`0.6.33-20`
 - 平台：`x86_64`（bundled 原生模块绑定 Linux x64 / Node 24 ABI）
 - 运行时依赖：`install_dep_apps=nodejs_v24`，由 fnOS 自动安装 Node.js v24
-- 参考打包格式：[iranee/fnos-hermes-agent](https://github.com/iranee/fnos-hermes-agent)
 - 默认监听端口：`8648`（绑定 `0.0.0.0`，NAS 所在局域网可直接访问）
 
 ## 安装行为
@@ -80,28 +79,6 @@ fnos-hermes-studio/
 > ```bash
 > npm install -g hermes-web-ui@0.6.33 --prefix app/node
 > ```
-
-### 方式一：官方 fnpack（推荐，100% 合规）
-
-从官方文档下载对应系统的 `fnpack`（Windows 用 `fnpack-1.2.3-windows-amd64`，放到仓库根目录或加入 PATH），然后：
-
-```bash
-cd fnos-hermes-studio
-fnpack build                      # 生成 hermes-studio.fpk（项目根）
-bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复制为 dist/fnos-hermes-studio_v0.6.33-20.fpk
-```
-
-`scripts/build-fpk.sh` 会优先调用 `fnpack` / `fnpack.exe`（含仓库根的 `fnpack.exe`），由官方工具产出；未找到 fnpack 时回退到方式二。
-
-### 方式二：纯 tar+gzip 兜底（无 fnpack 时）
-
-```bash
-cd fnos-hermes-studio
-bash scripts/build-fpk.sh dist    # 无 fnpack 时复刻官方双层 tar.gz 格式
-# 产物：dist/fnos-hermes-studio_v0.6.33-20.fpk
-```
-
-脚本复刻官方 fnpack 的双层 tar.gz 格式：内层 `app.tgz`（app/ 目录）的 MD5 写入 `manifest.checksum`，外层再打包 `manifest / cmd / config / wizard / ICON / app.tgz`。经真实 `.fpk` 样本验证，结构与官方 `fnpack` 输出一致。
 
 ## 安装到飞牛 NAS
 
