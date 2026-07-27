@@ -178,12 +178,21 @@ preinstall_cleanup() {
 
     # 3) 杀掉所有 Hermes 相关残留进程（包括 agent / studio / bridge / mcp 等）
     log_msg "Killing residual Hermes processes ..."
-    local _pats="bin/hermes-web-ui dist/server/index.js hermes.gateway hermes_bridge hermes-studio-mcp mcp_stdio_watchdog hermes-agent-monitor hermes-agent-dashboard"
-    for pat in ${_pats}; do
+    local _pats=(
+        "bin/hermes-web-ui"
+        "dist/server/index.js"
+        "hermes gateway"
+        "hermes_bridge"
+        "hermes-studio-mcp"
+        "mcp_stdio_watchdog"
+        "hermes-agent-monitor"
+        "hermes-agent-dashboard"
+    )
+    for pat in "${_pats[@]}"; do
         pkill -TERM -f "${pat}" 2>/dev/null || true
     done
     sleep 2
-    for pat in ${_pats}; do
+    for pat in "${_pats[@]}"; do
         pkill -9 -f "${pat}" 2>/dev/null || true
     done
 
@@ -399,11 +408,21 @@ rm -f "\${MARKER}"
 
     # 0) 后台安装前同样做一次残留进程/端口/属主清理
     echo ">>> Background installer: cleaning residual processes & permissions ..."
-    for pat in bin/hermes-web-ui dist/server/index.js "hermes gateway" hermes_bridge hermes-studio-mcp mcp_stdio_watchdog hermes-agent-monitor hermes-agent-dashboard; do
+    local _bg_pats=(
+        "bin/hermes-web-ui"
+        "dist/server/index.js"
+        "hermes gateway"
+        "hermes_bridge"
+        "hermes-studio-mcp"
+        "mcp_stdio_watchdog"
+        "hermes-agent-monitor"
+        "hermes-agent-dashboard"
+    )
+    for pat in "\${_bg_pats[@]}"; do
         pkill -TERM -f "\${pat}" 2>/dev/null || true
     done
     sleep 1
-    for pat in bin/hermes-web-ui dist/server/index.js "hermes gateway" hermes_bridge hermes-studio-mcp mcp_stdio_watchdog hermes-agent-monitor hermes-agent-dashboard; do
+    for pat in "\${_bg_pats[@]}"; do
         pkill -9 -f "\${pat}" 2>/dev/null || true
     done
     rm -f /tmp/hermes-agent-bridge.sock /tmp/hermes-web-ui.sock 2>/dev/null || true
