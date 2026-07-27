@@ -39,6 +39,10 @@ HERMES_BIN="${NODE_PREFIX}/bin/hermes-web-ui"
 BUNDLED_NODE="${APP_DIR}/node"
 BUNDLED_BIN="${BUNDLED_NODE}/bin/hermes-web-ui"
 
+# Hermes Agent 路径提前定义，供安装前环境清理使用
+HERMES_AGENT_ROOT="${TRIM_PKGHOME}/hermes-agent"
+HERMES_HOME="${TRIM_PKGHOME}/hermes-home"
+
 export HOME="${DATA_DIR}"
 export HERMES_WEB_UI_HOME="${DATA_DIR}"
 
@@ -134,6 +138,79 @@ log_msg "Node.js runtime: ${NODE_ROOT}"
 log_msg "node: $("${NODE_BIN}" --version 2>/dev/null || echo unknown)"
 
 # ---------------------------------------------------------------------------
+# 2a. 安装前环境检查与清理（v0.6.33-20 新增）
+# ---------------------------------------------------------------------------
+# 根因：很多用户从旧版本升级，或同时装过 hermes-agent，残留 root 进程
+# 占用 8648 端口 / 写入 root 属主文件 / 遗留 IPC socket，导致新实例
+# EACCES 或 EADDRINUSE。参考 fnos-hermes-agent v0.20.39 官方修复。
+preinstall_cleanup() {
+    log_msg ">>> Pre-install environment check & cleanup"
+
+    # 1) Node.js 可用性已在上文确认
+    log_msg "Node.js OK: ${NODE_ROOT}"
+
+    # 2) 检查 8648 端口占用并杀掉（用户明确要求的"端口冲突处理"）
+    local port=8648
+    local port_pids=""
+    if command -v ss >/dev/null 2>&1; then
+        port_pids=$(ss -tlnp 2>/dev/null | awk -v p=":${port}" '$0 ~ p && /pid=/ {
+            for(i=1;i<=NF;i++) if($i ~ /pid=/) { split($i,a,"="); print a[2]; break }
+        }' | sort -u | tr '\n' ' ')
+    elif command -v netstat >/dev/null 2>&1; then
+        port_pids=$(netstat -tlnp 2>/dev/null | awk -v p=":${port}" '$0 ~ p && /\// { split($NF,a,"/"); print a[1] }' | sort -u | tr '\n' ' ')
+    fi
+    if [ -z "${port_pids}" ] && command -v fuser >/dev/null 2>&1; then
+        port_pids=$(fuser "${port}/tcp" 2>/dev/null | tr -d '[:space:]')
+    fi
+    if [ -n "${port_pids}" ]; then
+        log_msg "WARNING: port ${port} already in use by PID ${port_pids}, terminating ..."
+        for pid in ${port_pids}; do
+            kill -TERM "${pid}" 2>/dev/null || true
+        done
+        sleep 2
+        for pid in ${port_pids}; do
+            kill -9 "${pid}" 2>/dev/null || true
+        done
+        log_msg "Port ${port} cleanup done"
+    else
+        log_msg "Port ${port} is free"
+    fi
+
+    # 3) 杀掉所有 Hermes 相关残留进程（包括 agent / studio / bridge / mcp 等）
+    log_msg "Killing residual Hermes processes ..."
+    local _pats="bin/hermes-web-ui dist/server/index.js hermes.gateway hermes_bridge hermes-studio-mcp mcp_stdio_watchdog hermes-agent-monitor hermes-agent-dashboard"
+    for pat in ${_pats}; do
+        pkill -TERM -f "${pat}" 2>/dev/null || true
+    done
+    sleep 2
+    for pat in ${_pats}; do
+        pkill -9 -f "${pat}" 2>/dev/null || true
+    done
+
+    # 4) 清理残留运行时文件（socket / PID / 旧日志）
+    rm -f /tmp/hermes-agent-bridge.sock 2>/dev/null || true
+    rm -f /tmp/hermes-web-ui.sock 2>/dev/null || true
+    rm -f "${HERMES_WEB_UI_HOME}/server.pid" 2>/dev/null || true
+    rm -f "${HERMES_HOME}/server.pid" 2>/dev/null || true
+    if [ -f "${HERMES_WEB_UI_HOME}/server.log" ]; then
+        mv -f "${HERMES_WEB_UI_HOME}/server.log" "${HERMES_WEB_UI_HOME}/server.log.old.$(date +%s)" 2>/dev/null || true
+    fi
+
+    # 5) 修复数据目录属主，防止 root 残留导致 EACCES
+    if [ -n "${TRIM_USERNAME}" ]; then
+        log_msg "Fixing ownership for ${TRIM_USERNAME} before install ..."
+        for d in "${DATA_DIR}" "${HERMES_HOME}" "${HERMES_AGENT_ROOT}" "${TRIM_PKGHOME}" "${TRIM_PKGVAR}"; do
+            [ -d "${d}" ] || continue
+            chown -R "${TRIM_USERNAME}:${TRIM_USERNAME}" "${d}" 2>/dev/null || log_msg "WARNING: chown ${d} failed"
+        done
+    fi
+
+    log_msg "Pre-install cleanup done"
+}
+
+preinstall_cleanup
+
+# ---------------------------------------------------------------------------
 # 3. 创建数据目录
 # ---------------------------------------------------------------------------
 log_msg "Creating data directories under ${DATA_DIR} ..."
@@ -205,8 +282,6 @@ log_msg "hermes-web-ui installed version: ${ACTUAL_VER}"
 # ---------------------------------------------------------------------------
 # 5. 安装 / 升级 Hermes Agent 后端（hermes-web-ui 启动时依赖 `hermes` 命令）
 # ---------------------------------------------------------------------------
-HERMES_AGENT_ROOT="${TRIM_PKGHOME}/hermes-agent"
-HERMES_HOME="${TRIM_PKGHOME}/hermes-home"
 BUNDLED_AGENT_SRC="${APP_DIR}/hermes-agent-src"
 
 # Hermes Agent 官方 install.sh 需要下载 uv、git clone 仓库并 pip install，
@@ -221,6 +296,13 @@ ensure_hermes_agent_background() {
     if [ -x "${HERMES_AGENT_ROOT}/venv/bin/hermes" ]; then
         log_msg "Hermes Agent already installed at ${HERMES_AGENT_ROOT}"
         return 0
+    fi
+
+    # 如果之前后台安装标记为失败，清理后重试
+    local bg_marker="${HERMES_HOME}/.install-agent.marker"
+    if [ -f "${bg_marker}" ] && [ "$(cat "${bg_marker}" 2>/dev/null)" = "failed" ]; then
+        log_msg "WARNING: previous background agent install failed, will retry"
+        rm -rf "${HERMES_AGENT_ROOT}" "${bg_marker}"
     fi
 
     log_msg ">>> Preparing Hermes Agent backend (will continue in background) ..."
@@ -280,7 +362,8 @@ ensure_hermes_agent_background() {
 
     cat > "${BG_SCRIPT}" <<AGENT_EOF
 #!/bin/bash
-set -e
+# 注意：本脚本在后台运行，不 set -e，避免某一步非致命失败导致整个安装退出。
+# 所有关键步骤显式检查，失败时写 marker=failed。
 AGENT_ROOT="${HERMES_AGENT_ROOT}"
 HERMES_HOME="${HERMES_HOME}"
 INSTALLER="/tmp/hermes-agent-install.sh"
@@ -291,6 +374,13 @@ MARKER="${HERMES_HOME}/.install-agent.marker"
 PID_FILE="${HERMES_HOME}/.install-agent.pid"
 APP_USER="${TRIM_USERNAME:-hermes-studio}"
 
+fail() {
+    echo "ERROR: \$1" | tee -a "\${LOG_FILE}" >&2
+    echo "failed" > "\${MARKER}"
+    rm -f "\${PID_FILE}"
+    exit 1
+}
+
 rm -f "\${MARKER}"
 {
     echo "=== Hermes Agent background install started at \$(date '+%Y-%m-%d %H:%M:%S') ==="
@@ -299,8 +389,7 @@ rm -f "\${MARKER}"
     echo "OFFLINE_SRC_FLAG=\${OFFLINE_SRC_FLAG}"
 
     if [ ! -s "\${INSTALLER}" ]; then
-        echo "ERROR: installer not found at \${INSTALLER}"
-        exit 1
+        fail "installer not found at \${INSTALLER}"
     fi
 
     export HOME="\${HERMES_HOME}"
@@ -308,45 +397,64 @@ rm -f "\${MARKER}"
     export HERMES_INSTALL_DIR="\${AGENT_ROOT}"
     export UV_NO_CONFIG=1
 
-    # install.sh 不允许目标目录已存在且非 git 仓库，先清理
-    rm -rf "\${AGENT_ROOT}"
+    # 0) 后台安装前同样做一次残留进程/端口/属主清理
+    echo ">>> Background installer: cleaning residual processes & permissions ..."
+    for pat in bin/hermes-web-ui dist/server/index.js "hermes gateway" hermes_bridge hermes-studio-mcp mcp_stdio_watchdog hermes-agent-monitor hermes-agent-dashboard; do
+        pkill -TERM -f "\${pat}" 2>/dev/null || true
+    done
+    sleep 1
+    for pat in bin/hermes-web-ui dist/server/index.js "hermes gateway" hermes_bridge hermes-studio-mcp mcp_stdio_watchdog hermes-agent-monitor hermes-agent-dashboard; do
+        pkill -9 -f "\${pat}" 2>/dev/null || true
+    done
+    rm -f /tmp/hermes-agent-bridge.sock /tmp/hermes-web-ui.sock 2>/dev/null || true
+    if command -v chown >/dev/null 2>&1 && id "\${APP_USER}" >/dev/null 2>&1; then
+        mkdir -p "\$(dirname "\${AGENT_ROOT}")" "\${HERMES_HOME}"
+        chown -R "\${APP_USER}:\${APP_USER}" "\$(dirname "\${AGENT_ROOT}")" "\${HERMES_HOME}" 2>/dev/null || true
+    fi
 
-    # 如果 FPK 内嵌了源码包，直接复制过去并标记离线安装，跳过 git clone
+    # 1) 确保目标目录可写。install.sh 不允许目标目录已存在且非 git 仓库，先清理。
+    # 注意：如果目录由 root 拥有，当前用户可能删不掉，这里尝试并记录。
+    if [ -d "\${AGENT_ROOT}" ]; then
+        rm -rf "\${AGENT_ROOT}" 2>/dev/null || { echo "WARNING: cannot remove old \${AGENT_ROOT}, trying chown ..."; chown -R "\${APP_USER}:\${APP_USER}" "\${AGENT_ROOT}" 2>/dev/null || true; rm -rf "\${AGENT_ROOT}" 2>/dev/null || true; }
+    fi
+
+    # 2) 如果 FPK 内嵌了源码包，直接复制过去并标记离线安装，跳过 git clone
     if [ "\${OFFLINE_SRC_FLAG}" = "1" ] && [ -d "\${BUNDLED_AGENT_SRC}" ]; then
         echo ">>> Using bundled Hermes Agent source (offline), copying to \${AGENT_ROOT} ..."
         mkdir -p "\$(dirname "\${AGENT_ROOT}")"
         if ! cp -a "\${BUNDLED_AGENT_SRC}" "\${AGENT_ROOT}"; then
-            echo "ERROR: failed to copy bundled source to \${AGENT_ROOT}"
-            exit 1
+            fail "failed to copy bundled source to \${AGENT_ROOT}"
         fi
         # 确保它是一个可识别的 git 仓库（install.sh 的离线模式会检查 .git）
         if [ ! -d "\${AGENT_ROOT}/.git" ]; then
             echo "Initializing git repo in bundled source ..."
-            cd "\${AGENT_ROOT}"
-            git init -q
+            cd "\${AGENT_ROOT}" || fail "cannot cd to \${AGENT_ROOT}"
+            git init -q || fail "git init failed"
             git config user.email "fnos@local"
             git config user.name "fnOS Installer"
             git add -A
-            git commit -q -m "offline bundle"
+            git commit -q -m "offline bundle" || fail "git commit failed"
             git remote add origin "https://github.com/NousResearch/hermes-agent.git" 2>/dev/null || true
         fi
         export HERMES_OFFLINE_INSTALL=1
         echo "Bundled source ready, HERMES_OFFLINE_INSTALL=1"
     fi
 
+    # 3) 运行官方 install.sh
+    echo ">>> Running Hermes Agent installer ..."
     if ! bash "\${INSTALLER}" --non-interactive --skip-setup \\
             --dir "\${AGENT_ROOT}" \\
             --hermes-home "\${HERMES_HOME}"; then
-        echo "ERROR: Hermes Agent installer exited with \$?"
-        exit 1
+        fail "Hermes Agent installer exited with \$?"
     fi
 
+    # 4) 校验 hermes 命令
     if [ ! -x "\${AGENT_ROOT}/venv/bin/hermes" ]; then
-        echo "ERROR: hermes command not found after install"
-        exit 1
+        fail "hermes command not found after install"
     fi
 
-    # 确保应用用户能读写 Agent 与 HOME 目录（后台脚本可能以 root 运行）
+    # 5) 确保应用用户能读写 Agent 与 HOME 目录（后台脚本可能以 root 运行）
+    echo ">>> Fixing permissions ..."
     chown -R "\${APP_USER}:\${APP_USER}" "\${AGENT_ROOT}" "\${HERMES_HOME}" 2>/dev/null || true
     chmod -R 755 "\${AGENT_ROOT}" 2>/dev/null || true
     chmod -R u+rwX "\${HERMES_HOME}" 2>/dev/null || true
