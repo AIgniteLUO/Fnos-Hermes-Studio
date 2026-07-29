@@ -179,6 +179,75 @@ ensure_node_bundle() {
 
 ensure_node_bundle
 
+# ── 准备 agent 的 bundled node_modules（browser tools + TUI 依赖）──
+# 根因：官方 installer 在首启后台跑 `npm install`（root 依赖 agent-browser /
+# @streamdown/math = browser tools + ui-tui workspace），默认 NODE_DEPS_TIMEOUT=600s，
+# NAS 联网慢/无网时会卡很久（UI 一直 starting）。这里在 CI（有网 + Node v24）把依赖
+# 装好，按相对路径镜像进 app/hermes-agent-node/；install_callback 检测到后直接复制
+# 并跳过 npm install，首启不再长时间等待。
+ensure_hermes_agent_node_bundle() {
+    local src_dir="$ROOT/app/hermes-agent-src"
+    local node_bundle="$ROOT/app/hermes-agent-node"
+    local work="$ROOT/.agent-node-work"
+
+    # 无源码或本地缺 node/npm 时跳过：不阻断整体构建，安装回退到在线 npm install。
+    if [ ! -f "$src_dir/package.json" ]; then
+        echo "未找到 hermes-agent-src/package.json，跳过 agent node bundle"
+        return 0
+    fi
+    for t in node npm; do
+        if ! command -v "$t" >/dev/null 2>&1; then
+            echo "WARNING: 构建 agent node bundle 缺少 $t，跳过（安装将回退在线 npm）"
+            return 0
+        fi
+    done
+
+    # 已存在且关键 node_modules 已生成则复用（本地增量/缓存）
+    if [ -d "$node_bundle/node_modules" ] && [ -d "$node_bundle/ui-tui/node_modules" ]; then
+        echo "使用已缓存的 agent node bundle: $node_bundle"
+        return 0
+    fi
+
+    echo "准备 agent node bundle（browser tools + TUI 依赖）..."
+    rm -rf "$node_bundle" "$work"
+    mkdir -p "$node_bundle"
+    cp -a "$src_dir" "$work"
+
+    (
+        cd "$work"
+        echo "node: $(node --version)  npm: $(npm --version)"
+        # 1) root 依赖（agent-browser / @streamdown/math = browser tools），只装 root 不装 workspace
+        if ! npm install --no-audit --no-fund --omit=dev --no-workspaces --include-workspace-root \
+                >>/tmp/agent_node_build.log 2>&1; then
+            echo "::warning:: agent root npm install 失败，agent node bundle 可能不完整（安装将回退在线 npm）"
+        fi
+        # 2) TUI workspace（含 ui-tui/packages/hermes-ink 与 apps/shared 的 file: 依赖）
+        if ! npm install --no-audit --no-fund --omit=dev --workspace ui-tui \
+                >>/tmp/agent_node_build.log 2>&1; then
+            echo "::warning:: agent tui npm install 失败，TUI 可能不可用（安装将回退在线 npm）"
+        fi
+    ) || true
+
+    # 收集每个 package root 的 node_modules，按相对路径镜像进 hermes-agent-node/
+    while IFS= read -r pkgroot; do
+        if [ -d "$pkgroot/node_modules" ]; then
+            local rel="${pkgroot#$work/}"
+            mkdir -p "$node_bundle/$rel"
+            cp -a "$pkgroot/node_modules" "$node_bundle/$rel/"
+        fi
+    done < <(find "$work" -name package.json -not -path '*/node_modules/*' -exec dirname {} \;)
+
+    rm -rf "$work"
+
+    if [ -d "$node_bundle/node_modules" ]; then
+        echo "✅ agent node bundle 已生成: $node_bundle"
+    else
+        echo "::warning:: agent node bundle 未生成 node_modules，安装将回退在线 npm"
+    fi
+}
+
+ensure_hermes_agent_node_bundle
+
 # ── 规范化 app/ 目录权限与属主 ──
 # 根因：CI runner（uid=1001）打包时会把 runner 的 uid/gid 写入 app.tgz。
 # fnOS 解压后若尝试 chown 到应用用户，某些只读/特殊权限文件可能失败，
@@ -237,9 +306,28 @@ def sanitize_app_tgz(data):
     removed = 0
     kept = 0
     for m in in_tar.getmembers():
-        # 跳过所有软链/硬链：install_callback 会自己重建 bin/ 软链
         if m.issym() or m.islnk():
-            removed += 1
+            # 保留 node_modules 内的软链：npm 的 workspace 链接（如
+            # node_modules/@hermes/shared -> ../../apps/shared）与 .bin 链接都是
+            # 相对且有效的，解压后在包内可解析；剥离它们会导致 agent 的
+            # @hermes/shared / @hermes/ink 等依赖无法解析（TUI 启动失败）。
+            # 只剥离 node_modules 之外的软链（如 app/node/bin 下自引用/损坏的
+            # bin 链接），这些由 install_callback 的 fix_bundled_bin_links 重建。
+            if '/node_modules/' in m.name:
+                m.uid = 0
+                m.gid = 0
+                m.uname = 'root'
+                m.gname = 'root'
+                try:
+                    f = in_tar.extractfile(m)
+                except Exception as e:
+                    print(f"WARN: extract symlink {m.name} failed: {e}", file=sys.stderr)
+                    removed += 1
+                    continue
+                out_tar.addfile(m, f)
+                kept += 1
+            else:
+                removed += 1
             continue
         # 统一属主为 root
         m.uid = 0

@@ -389,6 +389,7 @@ AGENT_ROOT="${HERMES_AGENT_ROOT}"
 HERMES_HOME="${HERMES_HOME}"
 INSTALLER="/tmp/hermes-agent-install.sh"
 BUNDLED_AGENT_SRC="${BUNDLED_AGENT_SRC}"
+APP_DIR="${APP_DIR}"
 OFFLINE_SRC_FLAG="${OFFLINE_SRC_FLAG}"
 LOG_FILE="${HERMES_HOME}/install-agent.log"
 MARKER="${HERMES_HOME}/.install-agent.marker"
@@ -470,6 +471,24 @@ rm -f "\${MARKER}"
         fi
         export HERMES_OFFLINE_INSTALL=1
         echo "Bundled source ready, HERMES_OFFLINE_INSTALL=1"
+    fi
+
+    # 2b) 若 FPK 内嵌 agent 的 node_modules（browser tools + TUI），直接复制并跳过
+    #     后台 npm install。官方 installer 默认 NODE_DEPS_TIMEOUT=600s，NAS 慢网会卡
+    #     很久；node_modules 已离线装好，复制后把超时压到 1s 让 npm 步骤直接跳过。
+    #     仅在使用 bundled 源码（OFFLINE_SRC_FLAG=1）时做，保证路径布局一致。
+    if [ "${OFFLINE_SRC_FLAG}" = "1" ] && [ -d "${APP_DIR}/hermes-agent-node/node_modules" ]; then
+        echo ">>> Bundled agent node_modules found, copying to skip npm install ..."
+        while IFS= read -r nm; do
+            rel="${nm#${APP_DIR}/hermes-agent-node/}"
+            mkdir -p "${AGENT_ROOT}/${rel}"
+            cp -a "${nm}/." "${AGENT_ROOT}/${rel}/" 2>/dev/null || \
+                echo "WARNING: copy ${rel} failed (non-fatal)" >&2
+        done < <(find "${APP_DIR}/hermes-agent-node" -name node_modules -type d)
+        export NODE_DEPS_TIMEOUT=1
+        echo "Bundled agent node_modules copied; NODE_DEPS_TIMEOUT=1 (npm install skipped)"
+    else
+        echo "No bundled agent node_modules in FPK; will run npm install (needs network)"
     fi
 
     # 3) 运行官方 install.sh

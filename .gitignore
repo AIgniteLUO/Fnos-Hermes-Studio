@@ -9,6 +9,10 @@ app/node/
 app/hermes-agent-src/
 .hermes-agent.tar.gz
 .ha-extract/
+# Hermes Agent 的 browser tools + TUI 依赖（CI 打包生成，按相对路径镜像进 FPK），不入库
+app/hermes-agent-node/
+# 构建 agent node bundle 的临时工作目录
+.agent-node-work/
 # 官方构建工具二进制
 fnpack.exe
 app.tgz

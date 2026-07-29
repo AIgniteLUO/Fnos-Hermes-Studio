@@ -200,6 +200,12 @@ jobs:
           else
             echo "⚠️ 未包含 Hermes Agent 离线源码包，安装时仍会尝试 git clone"
           fi
+          if echo "$INNER" | grep -qE '^(app/)?hermes-agent-node/node_modules/' \
+             && echo "$INNER" | grep -qE '^(app/)?hermes-agent-node/ui-tui/node_modules/'; then
+            echo "✅ 检测到 Agent browser tools + TUI 依赖（hermes-agent-node），首启将跳过 npm install"
+          else
+            echo "::warning:: 未包含 hermes-agent-node 依赖包，首启后台仍会联网跑 npm install"
+          fi
 
       # 额外生成一个固定文件名，便于「总是下载最新版」。
       - name: Copy to rolling asset name
@@ -249,6 +255,16 @@ jobs:
           Hermes Studio for fnOS — 稳定版 v${{ steps.target_version.outputs.target_version }}
 
           ## 本次更新（v${{ steps.target_version.outputs.target_version }}）
+          - **Agent browser tools + TUI 依赖预装进 FPK（v0.6.33-24，解决首启长时间等待）**：
+            - 新增 `app/hermes-agent-node/`，在 CI（Linux x64 + Node v24）把 Hermes Agent 的
+              browser tools 依赖（agent-browser / @streamdown/math）与 ui-tui workspace 依赖装好，
+              按相对路径镜像进包。
+            - 安装时 install_callback 检测到 bundled 的 `hermes-agent-node` 后直接复制到 Agent 目录，
+              并把官方 installer 的 `NODE_DEPS_TIMEOUT` 压到 1s，**跳过后台 npm install**
+              （官方默认 600s，慢网会卡很久），首启大幅提速。
+            - FPK 后处理保留 `node_modules/` 内的有效软链（npm workspace / .bin 链接），
+              以保证 Agent 的 `@hermes/shared` / `@hermes/ink` 等依赖可解析；仅剥离
+              `app/node/bin` 下自引用/损坏的 bin 软链（由 install_callback 自行重建）。
           - **修复"设置目录权限失败"安装报错（v0.6.33-23 彻底修复）**：
             - 通过 FPK 后处理脚本移除 app.tgz 内所有 npm 生成的软链（这些软链在打包后变成自引用/损坏，fnOS 解压时 `chmod/chown -R` 直接失败）。
             - 重置 app.tgz 所有条目 uid/gid 为 root，统一权限为 755/644，彻底避免 CI runner 属主被带入包。
