@@ -249,9 +249,10 @@ jobs:
           Hermes Studio for fnOS — 稳定版 v${{ steps.target_version.outputs.target_version }}
 
           ## 本次更新（v${{ steps.target_version.outputs.target_version }}）
-          - **修复"设置目录权限失败"安装报错**：
-            - build-fpk.sh 打包前统一规范化 `app/` 权限，避免 CI runner 的 uid/gid 与特殊权限位被带入 FPK。
-            - install_callback 移除 `set -e`，所有 `chmod/chown` 改为最佳 effort，非致命失败不再导致整个安装退出。
+          - **修复"设置目录权限失败"安装报错（v0.6.33-23 彻底修复）**：
+            - 通过 FPK 后处理脚本移除 app.tgz 内所有 npm 生成的软链（这些软链在打包后变成自引用/损坏，fnOS 解压时 `chmod/chown -R` 直接失败）。
+            - 重置 app.tgz 所有条目 uid/gid 为 root，统一权限为 755/644，彻底避免 CI runner 属主被带入包。
+            - install_callback 改为直接检测 `app/node/lib/node_modules/hermes-web-ui/bin/hermes-web-ui.mjs` 判断 bundled node 是否存在，并在安装时自行重建 bin/ 软链。
           - **修复"安装卡在 55%"根因**：FPK 现在在 CI（Linux x64 + Node v24 + gcc/g++）把
             hermes-web-ui 的 node_modules（含编译好的原生 node-pty）作为 `app/node` 打进包。
             安装时 install_callback 走 Path A 离线复制（几秒完成），**不再**回退 npm install

@@ -3,7 +3,7 @@
 将 [EKKOLearnAI/hermes-studio](https://github.com/EKKOLearnAI/hermes-studio) 打包为飞牛 fnOS 可安装的 **FPK** 应用，保持原版 Web UI 模样，**不使用 Docker**，采用 **npm 原生依赖 + bundled node_modules** 方式安装。
 
 - 应用本体：`hermes-web-ui`（版本 `0.6.33`）。FPK **默认包含** bundled 运行时 `app/node/`（含编译好的原生 node-pty），由 CI 在 Node v24 + gcc/g++ 环境下构建生成；安装时 `install_callback` 直接离线复制到数据目录（几秒完成），**不再依赖 fnOS 联网编译**（fnOS 缺 gcc，此前正是安装卡死的根因）。
-- 包版本（迭代号）：`0.6.33-22`
+- 包版本（迭代号）：`0.6.33-23`
 - 平台：`x86_64`（bundled 原生模块绑定 Linux x64 / Node 24 ABI）
 - 运行时依赖：`install_dep_apps=nodejs_v24`，由 fnOS 自动安装 Node.js v24
 - 参考打包格式：[iranee/fnos-hermes-agent](https://github.com/iranee/fnos-hermes-agent)
@@ -18,7 +18,8 @@
    - 若 bundled node 缺失才回退 `npm install`（仅开发/测试场景，fnOS 缺 gcc 会失败）。
    - 若 FPK 内嵌 `app/hermes-agent-src/`，直接用它离线安装 Hermes Agent 后端，**跳过 git clone**（解决 NAS 无法连接 GitHub 导致启动不了的问题）。
    - **v0.6.33-21 起：安装前自动环境检查**——检测 Node.js、检查 `8648` 端口占用、杀掉占用进程及所有 Hermes 残留进程（`hermes-web-ui` / `hermes gateway` / `bridge` / `monitor` / `dashboard` / MCP 等）、清理 IPC socket / PID 文件、修复数据目录属主，避免旧版本残留导致 EACCES / EADDRINUSE 安装/启动失败。
-   - **v0.6.33-22 起：修复"设置目录权限失败"安装报错**——打包前规范化 `app/` 权限/属主，install_callback 移除 `set -e` 并把 `chmod/chown` 全部改为最佳 effort，非致命权限错误不再中断安装。
+   - **v0.6.33-23 起：彻底修复"设置目录权限失败"安装报错**——FPK 后处理脚本会移除 `app.tgz` 内所有 npm 生成的软链（这些软链在打包后变成自引用/损坏，是 fnOS 解压时权限设置失败的直接原因），并重置所有条目 uid/gid 为 root、权限正规化为 755/644。install_callback 改为直接检测真实的 `.mjs` 入口，安装时自行重建 `bin/` 软链。
+   - **v0.6.33-22 起：修复"设置目录权限失败"安装报错（初步）**——打包前规范化 `app/` 权限/属主，install_callback 移除 `set -e` 并把 `chmod/chown` 全部改为最佳 effort。
    - 修复目录权限。
 3. `cmd/main start`：调用 `hermes-web-ui start --port 8648`，由官方 CLI 自带的 daemon 机制后台运行，默认绑定 `0.0.0.0`。
 4. 桌面图标通过 `app/ui/config` 的 `.url` 入口直接打开 `http://<NAS>:8648/`，即原版 Hermes Studio Web UI。
@@ -85,7 +86,7 @@ fnos-hermes-studio/
 ```bash
 cd fnos-hermes-studio
 fnpack build                      # 生成 hermes-studio.fpk（项目根）
-bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复制为 dist/fnos-hermes-studio_v0.6.33-22.fpk
+bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复制为 dist/fnos-hermes-studio_v0.6.33-23.fpk
 ```
 
 `scripts/build-fpk.sh` 会优先调用 `fnpack` / `fnpack.exe`（含仓库根的 `fnpack.exe`），由官方工具产出；未找到 fnpack 时回退到方式二。
@@ -95,7 +96,7 @@ bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复
 ```bash
 cd fnos-hermes-studio
 bash scripts/build-fpk.sh dist    # 无 fnpack 时复刻官方双层 tar.gz 格式
-# 产物：dist/fnos-hermes-studio_v0.6.33-22.fpk
+# 产物：dist/fnos-hermes-studio_v0.6.33-23.fpk
 ```
 
 脚本复刻官方 fnpack 的双层 tar.gz 格式：内层 `app.tgz`（app/ 目录）的 MD5 写入 `manifest.checksum`，外层再打包 `manifest / cmd / config / wizard / ICON / app.tgz`。经真实 `.fpk` 样本验证，结构与官方 `fnpack` 输出一致。
@@ -103,7 +104,7 @@ bash scripts/build-fpk.sh dist    # 无 fnpack 时复刻官方双层 tar.gz 格�
 ## 安装到飞牛 NAS
 
 1. 飞牛桌面打开「应用中心」→ 右上角「设置」→「手动安装应用」。
-2. 选择生成的 `fnos-hermes-studio_v0.6.33-22.fpk`，确认安装。
+2. 选择生成的 `fnos-hermes-studio_v0.6.33-23.fpk`，确认安装。
 3. 安装向导会出现「微信渠道访问控制」步骤：
    - **默认关闭**：微信 DM 保持白名单模式（`WEIXIN_DM_POLICY=allowlist`），只有 Web UI「设置-渠道-微信」里手动添加的用户才能发消息。
    - **勾选开关**：允许所有微信用户发送消息，安装脚本会自动写入 `WEIXIN_DM_POLICY=open` 与 `WEIXIN_ALLOW_ALL_USERS=true` 到 `~/.hermes/.env`，无需再手动改配置。

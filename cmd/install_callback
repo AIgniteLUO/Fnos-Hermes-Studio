@@ -40,7 +40,9 @@ DATA_DIR="${TRIM_PKGHOME}/data"
 NODE_PREFIX="${DATA_DIR}/node"
 HERMES_BIN="${NODE_PREFIX}/bin/hermes-web-ui"
 BUNDLED_NODE="${APP_DIR}/node"
-BUNDLED_BIN="${BUNDLED_NODE}/bin/hermes-web-ui"
+# v0.6.33-23 起 FPK 内不再保留 npm 生成的 bin/ 软链（避免 fnOS 解压时因软链损坏/自引用
+# 导致"设置目录权限失败"），改为直接检测真实的 hermes-web-ui 入口 .mjs。
+BUNDLED_BIN="${BUNDLED_NODE}/lib/node_modules/hermes-web-ui/bin/hermes-web-ui.mjs"
 
 # Hermes Agent 路径提前定义，供安装前环境清理使用
 HERMES_AGENT_ROOT="${TRIM_PKGHOME}/hermes-agent"

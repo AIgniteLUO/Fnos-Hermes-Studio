@@ -215,6 +215,125 @@ normalize_app_permissions() {
 
 normalize_app_permissions
 
+# ── FPK 后处理：移除软链、统一属主为 root、正规化权限 ──
+# 根因：CI runner 以 uid=1001 构建，npm install -g 会生成 bin/ 软链；fnpack 把这些
+# 原样打进 app.tgz。飞牛应用中心解压后再设置权限时，遇到：
+#   1) 属主为 1001 的文件（非 root），某些 chown 场景下失败；
+#   2) 软链自引用或指向不存在目标（Windows/Git Bash 下 npm 软链易损坏），
+#      chmod/chown 递归处理时直接报错"设置目录权限失败"。
+# 因此构建完成后必须对 FPK 做一次后处理：把 app.tgz 里所有软链/硬链去掉，
+# 所有条目 uid/gid 重置为 0，权限正规化，再重新计算 checksum 打包。
+postprocess_fpk() {
+    local src="$1" dst="$2"
+    echo "后处理 FPK：移除软链、重置属主、正规化权限 ..."
+    python3 - "$src" "$dst" <<'PY'
+import tarfile, hashlib, io, os, tempfile, shutil, gzip, sys
+
+def sanitize_app_tgz(data):
+    in_buf = io.BytesIO(data)
+    in_tar = tarfile.open(fileobj=in_buf, mode='r:gz')
+    out_buf = io.BytesIO()
+    out_tar = tarfile.open(fileobj=out_buf, mode='w:gz', compresslevel=9)
+    removed = 0
+    kept = 0
+    for m in in_tar.getmembers():
+        # 跳过所有软链/硬链：install_callback 会自己重建 bin/ 软链
+        if m.issym() or m.islnk():
+            removed += 1
+            continue
+        # 统一属主为 root
+        m.uid = 0
+        m.gid = 0
+        m.uname = 'root'
+        m.gname = 'root'
+        # 正规化权限
+        if m.isdir():
+            m.mode = 0o755
+        else:
+            # 任何可执行位 => 755，否则 644
+            m.mode = 0o755 if (m.mode & 0o111) else 0o644
+        m.mode &= ~0o7000  # 去掉 setuid/setgid/sticky
+        try:
+            f = in_tar.extractfile(m)
+        except Exception as e:
+            print(f"WARN: extract {m.name} failed: {e}", file=sys.stderr)
+            continue
+        out_tar.addfile(m, f)
+        kept += 1
+    out_tar.close()
+    print(f"  app.tgz: removed {removed} symlinks/hardlinks, kept {kept} regular members")
+    return out_buf.getvalue()
+
+src, dst = sys.argv[1], sys.argv[2]
+tmp = tempfile.mkdtemp()
+try:
+    # 解外层 FPK
+    outer = tarfile.open(src, 'r:gz')
+    app_data = outer.extractfile('app.tgz').read()
+    for m in outer.getmembers():
+        if m.name == 'app.tgz':
+            continue
+        outer.extract(m, tmp)
+    outer.close()
+
+    # 清洗 app.tgz
+    new_app = sanitize_app_tgz(app_data)
+    checksum = hashlib.md5(new_app).hexdigest()
+
+    # 更新 manifest
+    manifest_path = os.path.join(tmp, 'manifest')
+    with open(manifest_path, 'rb') as f:
+        content = f.read().replace(b'\r\n', b'\n')
+    lines = content.decode('utf-8').splitlines(keepends=True)
+    with open(manifest_path, 'w', encoding='utf-8', newline='\n') as f:
+        for line in lines:
+            if line.startswith('checksum'):
+                f.write(f'checksum              = {checksum}\n')
+            else:
+                f.write(line)
+
+    # manifest.checksum
+    with open(os.path.join(tmp, 'manifest.checksum'), 'w', encoding='utf-8', newline='\n') as f:
+        f.write(checksum + '\n')
+
+    # 重打外层 FPK：manifest -> manifest.checksum -> 其他 -> app.tgz
+    out = io.BytesIO()
+    out_tar = tarfile.open(fileobj=out, mode='w')
+    order = ['manifest', 'manifest.checksum']
+    other = sorted([m.name for m in tarfile.open(src, 'r:gz').getmembers()
+                    if m.name not in ('manifest', 'manifest.checksum', 'app.tgz')])
+    order.extend(other)
+    order.append('app.tgz')
+
+    for name in order:
+        if name == 'app.tgz':
+            info = tarfile.TarInfo(name='app.tgz')
+            info.size = len(new_app)
+            info.mode = 0o644
+            info.uid = 0
+            info.gid = 0
+            out_tar.addfile(info, io.BytesIO(new_app))
+        else:
+            full = os.path.join(tmp, name)
+            if os.path.isdir(full):
+                info = tarfile.TarInfo(name=name)
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o755
+                info.uid = 0
+                info.gid = 0
+                out_tar.addfile(info)
+            else:
+                out_tar.add(full, arcname=name)
+    out_tar.close()
+
+    with gzip.open(dst, 'wb', compresslevel=9) as gz:
+        gz.write(out.getvalue())
+    print(f"  postprocess OK: {dst}")
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+PY
+}
+
 # ── 探测 fnpack ──
 FNPACK=""
 for cand in "$ROOT/fnpack.exe" "$ROOT/fnpack" fnpack fnpack.exe; do
@@ -282,6 +401,9 @@ PY
         echo "已补充 manifest.checksum"
     fi
 
+    # 后处理：移除软链、重置属主、正规化权限（避免 fnOS 报"设置目录权限失败"）
+    postprocess_fpk "$SRC_FPK" "$SRC_FPK"
+
     if [ "$OUT_DIR" != "." ]; then
         cp "$SRC_FPK" "${OUT_DIR}/fnos-${APPNAME}_v${VERSION}.fpk"
         echo "已生成: ${OUT_DIR}/fnos-${APPNAME}_v${VERSION}.fpk"
@@ -319,8 +441,11 @@ tar --owner=root --group=root --mtime='@0' -cf - manifest manifest.checksum cmd 
 rm -f manifest.checksum || true
 rm -f app.tgz || true
 
-# 5. 若指定了输出目录，重命名为带版本号的最终文件名
+# 6. 后处理：移除软链、重置属主、正规化权限
 TARGET="${OUT_DIR}/${APPNAME}.fpk"
+postprocess_fpk "$TARGET" "$TARGET"
+
+# 7. 若指定了输出目录，重命名为带版本号的最终文件名
 if [ "$OUT_DIR" != "." ]; then
     FINAL="${OUT_DIR}/fnos-${APPNAME}_v${VERSION}.fpk"
     mv "$TARGET" "$FINAL"
