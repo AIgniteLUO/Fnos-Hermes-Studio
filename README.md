@@ -4,7 +4,7 @@
 
 - 应用本体：`hermes-web-ui`（版本 `0.6.35`，由 `config/bootstrap/hermes-studio-version.env` 记录，CI 自动与 npm `dist-tags.latest` 对齐）。FPK **默认包含** bundled 运行时 `app/node/`（含编译好的原生 node-pty），由 CI 在 Node v24 + gcc/g++ 环境下构建生成；安装时 `install_callback` 直接离线复制到数据目录（几秒完成），**不再依赖 fnOS 联网编译**（fnOS 缺 gcc，此前正是安装卡死的根因）。
 - 同时打包 **Hermes Agent 的 browser tools + TUI 依赖** 为 `app/hermes-agent-node/`，安装时直接复制到 Agent 目录并跳过后台 `npm install`，**首启不再长时间等待**。
-- 包版本（迭代号）：`0.6.35-1`
+- 包版本（迭代号）：`0.6.35-2`
 - 平台：`x86_64`（bundled 原生模块绑定 Linux x64 / Node 24 ABI）
 - 运行时依赖：`install_dep_apps=nodejs_v24`，由 fnOS 自动安装 Node.js v24
 - 参考打包格式：[iranee/fnos-hermes-agent](https://github.com/iranee/fnos-hermes-agent)
@@ -103,7 +103,7 @@ fnos-hermes-studio/
 ```bash
 cd fnos-hermes-studio
 fnpack build                      # 生成 hermes-studio.fpk（项目根）
-bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复制为 dist/fnos-hermes-studio_v0.6.35-1.fpk
+bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复制为 dist/fnos-hermes-studio_v0.6.35-2.fpk
 ```
 
 `scripts/build-fpk.sh` 会优先调用 `fnpack` / `fnpack.exe`（含仓库根的 `fnpack.exe`），由官方工具产出；未找到 fnpack 时回退到方式二。
@@ -113,7 +113,7 @@ bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复
 ```bash
 cd fnos-hermes-studio
 bash scripts/build-fpk.sh dist    # 无 fnpack 时复刻官方双层 tar.gz 格式
-# 产物：dist/fnos-hermes-studio_v0.6.35-1.fpk
+# 产物：dist/fnos-hermes-studio_v0.6.35-2.fpk
 ```
 
 脚本复刻官方 fnpack 的双层 tar.gz 格式：内层 `app.tgz`（app/ 目录）的 MD5 写入 `manifest.checksum`，外层再打包 `manifest / cmd / config / wizard / ICON / app.tgz`。经真实 `.fpk` 样本验证，结构与官方 `fnpack` 输出一致。
@@ -121,7 +121,7 @@ bash scripts/build-fpk.sh dist    # 无 fnpack 时复刻官方双层 tar.gz 格�
 ## 安装到飞牛 NAS
 
 1. 飞牛桌面打开「应用中心」→ 右上角「设置」→「手动安装应用」。
-2. 选择生成的 `fnos-hermes-studio_v0.6.35-1.fpk`，确认安装。
+2. 选择生成的 `fnos-hermes-studio_v0.6.35-2.fpk`，确认安装。
 3. 安装向导会出现「微信渠道访问控制」步骤：
    - **默认关闭**：微信 DM 保持白名单模式（`WEIXIN_DM_POLICY=allowlist`），只有 Web UI「设置-渠道-微信」里手动添加的用户才能发消息。
    - **勾选开关**：允许所有微信用户发送消息，安装脚本会自动写入 `WEIXIN_DM_POLICY=open` 与 `WEIXIN_ALLOW_ALL_USERS=true` 到 `~/.hermes/.env`，无需再手动改配置。

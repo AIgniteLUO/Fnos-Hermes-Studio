@@ -34,31 +34,39 @@ fi
 ensure_hermes_agent_src() {
     local src_dir="$ROOT/app/hermes-agent-src"
     local marker="$src_dir/.offline-bundle"
-    local tmp_tar="$ROOT/.hermes-agent.tar.gz"
-
-    # 如果用户已手动放置源码包，直接复用
-    if [ -d "$src_dir" ] && [ -f "$src_dir/pyproject.toml" ]; then
-        if [ -f "$marker" ]; then
-            echo "使用已缓存的 Hermes Agent 源码包: $src_dir"
-        else
-            echo "使用手动放置的 Hermes Agent 源码包: $src_dir"
-        fi
-        return 0
-    fi
-
-    echo "准备 Hermes Agent 离线源码包..."
-    rm -rf "$src_dir" "$tmp_tar"
-    mkdir -p "$src_dir"
-
-    # 读取追踪的 agent release 标签（默认回退 main 保证兼容）。
-    # 该标签由 .github/workflows/auto-update.yml 自动与上游最新 release 对齐。
+    local ref_marker="$src_dir/.bundled-agent-ref"
     local agent_ver="main"
     local agent_env="$ROOT/config/bootstrap/hermes-agent-version.env"
     if [ -f "$agent_env" ]; then
         agent_ver="$(grep -E '^HERMES_AGENT_VERSION=' "$agent_env" | awk -F'=' '{print $2}' | tr -d ' ')"
         [ -z "$agent_ver" ] && agent_ver="main"
     fi
+    local tmp_tar="$ROOT/.hermes-agent.tar.gz"
 
+    # 缓存/手动放置的源码包处理：
+    # - 有 ref 标记且与当前 HERMES_AGENT_VERSION 一致 → 直接复用
+    # - 有 ref 标记但 ref 不一致（env 已变更）→ 重新下载对齐
+    # - 无 ref 标记（手动放置 / 旧式缓存）→ 直接复用，不覆盖用户放置的内容
+    if [ -d "$src_dir" ] && [ -f "$src_dir/pyproject.toml" ]; then
+        if [ -f "$ref_marker" ]; then
+            if [ "$(cat "$ref_marker" 2>/dev/null)" = "$agent_ver" ]; then
+                echo "使用已缓存的 Hermes Agent 源码包: $src_dir (ref=$agent_ver)"
+                return 0
+            fi
+            echo "缓存 Agent 源码 ref($(cat "$ref_marker" 2>/dev/null)) 与当前 $agent_ver 不一致，重新下载"
+            rm -rf "$src_dir"
+        else
+            echo "使用手动放置的 Hermes Agent 源码包: $src_dir"
+            return 0
+        fi
+    fi
+
+    echo "准备 Hermes Agent 离线源码包..."
+    rm -rf "$src_dir" "$tmp_tar"
+    mkdir -p "$src_dir"
+
+    # 追踪的 agent release 标签已在函数顶部读取为 agent_ver（默认回退 main 保证兼容），
+    # 由 .github/workflows/auto-update.yml 自动与上游最新 release 对齐。
     local url="https://api.github.com/repos/NousResearch/hermes-agent/tarball/${agent_ver}"
     local attempt=1
     local downloaded=false
@@ -127,6 +135,7 @@ ensure_hermes_agent_src() {
     )
 
     touch "$marker"
+    echo "$agent_ver" > "$ref_marker"
     echo "Hermes Agent 离线源码包已准备: $src_dir (ref=$agent_ver)"
 }
 

@@ -98,24 +98,41 @@ jobs:
       # 并跳过网络 clone。
       # Hermes Agent 离线源码为 v0.6.33-19 的核心修复点：若下载/解压失败则直接
       # 中止构建，绝不能发布一个不含离线源码的 v19（那等于没修）。
+      #
+      # 注意：早期此处硬编码 tarball/main，导致 build-fpk.sh 里「钉 release 标签」
+      # 的逻辑被覆盖、实际一直拉 main。现统一按 config/bootstrap/hermes-agent-version.env
+      # 的 HERMES_AGENT_VERSION 钉标签下载（由 auto-update.yml 自动与上游最新 release 对齐）；
+      # 用 .bundled-agent-ref 记录当前 ref，env 变更时自动重新下载；标签下载失败回退 main。
       - name: Prepare Hermes Agent offline source
         run: |
           set -e
-          if [ -f "app/hermes-agent-src/.offline-bundle" ] && [ -f "app/hermes-agent-src/pyproject.toml" ]; then
-            echo "Hermes Agent 离线源码包已存在，跳过下载"
+          DESIRED_REF="$(grep '^HERMES_AGENT_VERSION=' config/bootstrap/hermes-agent-version.env | cut -d= -f2)"
+          [ -z "$DESIRED_REF" ] && DESIRED_REF="main"
+          REF_MARKER="app/hermes-agent-src/.bundled-agent-ref"
+          if [ -f "$REF_MARKER" ] && [ "$(cat "$REF_MARKER")" = "$DESIRED_REF" ] && [ -f "app/hermes-agent-src/pyproject.toml" ]; then
+            echo "Hermes Agent 离线源码包已存在且 ref 匹配 ($DESIRED_REF)，跳过下载"
             exit 0
           fi
-          echo "下载 Hermes Agent 源码包..."
+          echo "下载 Hermes Agent 源码包 (ref=$DESIRED_REF)..."
           rm -rf app/hermes-agent-src /tmp/ha.tar.gz /tmp/ha-extract
           mkdir -p /tmp/ha-extract
           for i in 1 2 3; do
             echo "  尝试下载 ($i/3)..."
-            if curl -fsSL --max-time 600 "https://api.github.com/repos/NousResearch/hermes-agent/tarball/main" -o /tmp/ha.tar.gz; then
+            if curl -fsSL --max-time 600 "https://api.github.com/repos/NousResearch/hermes-agent/tarball/${DESIRED_REF}" -o /tmp/ha.tar.gz; then
               break
             fi
             echo "  下载失败，重试..."
             sleep 5
           done
+          # 标签下载失败回退 main（保证离线包仍能生成，仅失去该次可复现性）
+          if [ ! -s /tmp/ha.tar.gz ] && [ "$DESIRED_REF" != "main" ]; then
+            echo "WARNING: 按 $DESIRED_REF 下载失败，回退 main"
+            for i in 1 2 3; do
+              curl -fsSL --max-time 600 "https://api.github.com/repos/NousResearch/hermes-agent/tarball/main" -o /tmp/ha.tar.gz && break
+              sleep 5
+            done
+            DESIRED_REF="main"
+          fi
           [ -s /tmp/ha.tar.gz ] || { echo "::error:: Hermes Agent 源码包下载失败（GitHub 网络问题），中止构建"; exit 1; }
           mkdir -p app/hermes-agent-src
           tar -xzf /tmp/ha.tar.gz -C /tmp/ha-extract --strip-components=1
@@ -129,8 +146,9 @@ jobs:
             git add -A
             git commit -q -m "offline bundle"
           )
+          echo "$DESIRED_REF" > "$REF_MARKER"
           touch app/hermes-agent-src/.offline-bundle
-          echo "离线源码包准备完成"
+          echo "离线源码包准备完成 (ref=$DESIRED_REF)"
           du -sh app/hermes-agent-src
 
       # 复用本地已验证的构建脚本（优先 fnpack，未找到则纯 tar+gzip，并自动补 manifest.checksum）。
@@ -273,6 +291,7 @@ jobs:
           **打包追踪的上游版本**（由 auto-update.yml 自动对齐）：hermes-web-ui `__WEBUI__` ｜ hermes-agent `__AGENT__`
 
           ## 本次更新（v${{ steps.target_version.outputs.target_version }}）
+          - **修复 Agent 源码未钉 release 标签（v0.6.35-2）**：build.yml 早期把 Hermes Agent 源码写死拉 `main` 分支，覆盖 build-fpk.sh 的「钉标签」逻辑，导致包内 agent 始终是 main 而非上游 release。现统一按 `config/bootstrap/hermes-agent-version.env` 的 `HERMES_AGENT_VERSION`（当前 `v2026.7.20`）下载，由 auto-update.yml 自动跟进上游最新 release；带 ref 缓存标记，env 变更自动重新下载，标签失败回退 main。
           - **Agent browser tools + TUI 依赖预装进 FPK（v0.6.33-25 修复 v0.6.33-24 路径 bug）**：
             - 新增 `app/hermes-agent-node/`，在 CI（Linux x64 + Node v24）把 Hermes Agent 的
               browser tools 依赖（agent-browser / @streamdown/math）与 ui-tui workspace 依赖装好，
