@@ -90,7 +90,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: npm
+          check-latest: true
 
       # Hermes Agent 官方 install.sh 默认 git clone NousResearch/hermes-agent。
       # 大量 NAS 无法稳定连接 GitHub，导致安装后 Agent 启动不了。
