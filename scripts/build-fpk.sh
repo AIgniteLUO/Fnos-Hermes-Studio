@@ -50,7 +50,16 @@ ensure_hermes_agent_src() {
     rm -rf "$src_dir" "$tmp_tar"
     mkdir -p "$src_dir"
 
-    local url="https://api.github.com/repos/NousResearch/hermes-agent/tarball/main"
+    # 读取追踪的 agent release 标签（默认回退 main 保证兼容）。
+    # 该标签由 .github/workflows/auto-update.yml 自动与上游最新 release 对齐。
+    local agent_ver="main"
+    local agent_env="$ROOT/config/bootstrap/hermes-agent-version.env"
+    if [ -f "$agent_env" ]; then
+        agent_ver="$(grep -E '^HERMES_AGENT_VERSION=' "$agent_env" | awk -F'=' '{print $2}' | tr -d ' ')"
+        [ -z "$agent_ver" ] && agent_ver="main"
+    fi
+
+    local url="https://api.github.com/repos/NousResearch/hermes-agent/tarball/${agent_ver}"
     local attempt=1
     local downloaded=false
     while [ $attempt -le 3 ]; do
@@ -63,6 +72,23 @@ ensure_hermes_agent_src() {
         attempt=$((attempt + 1))
         sleep 5
     done
+
+    # 钉的 release 标签下载失败（如标签被删/网络抖动）时，回退到 main 分支，
+    # 保证离线源码包仍能生成（代价是失去该次的可复现性，仅作兜底）。
+    if [ "$downloaded" != "true" ] && [ "$agent_ver" != "main" ]; then
+        echo "WARNING: 按标签 $agent_ver 下载失败，回退到 main 分支"
+        url="https://api.github.com/repos/NousResearch/hermes-agent/tarball/main"
+        attempt=1
+        while [ $attempt -le 3 ]; do
+            if curl -fsSL --max-time 300 "$url" -o "$tmp_tar" 2>/dev/null; then
+                downloaded=true
+                agent_ver="main"
+                break
+            fi
+            attempt=$((attempt + 1))
+            sleep 5
+        done
+    fi
 
     if [ "$downloaded" != "true" ]; then
         echo "WARNING: 无法下载 Hermes Agent 源码包（GitHub 网络问题）。"
@@ -101,7 +127,7 @@ ensure_hermes_agent_src() {
     )
 
     touch "$marker"
-    echo "Hermes Agent 离线源码包已准备: $src_dir"
+    echo "Hermes Agent 离线源码包已准备: $src_dir (ref=$agent_ver)"
 }
 
 ensure_hermes_agent_src

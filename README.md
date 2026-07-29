@@ -2,9 +2,9 @@
 
 将 [EKKOLearnAI/hermes-studio](https://github.com/EKKOLearnAI/hermes-studio) 打包为飞牛 fnOS 可安装的 **FPK** 应用，保持原版 Web UI 模样，**不使用 Docker**，采用 **npm 原生依赖 + bundled node_modules** 方式安装。
 
-- 应用本体：`hermes-web-ui`（版本 `0.6.33`）。FPK **默认包含** bundled 运行时 `app/node/`（含编译好的原生 node-pty），由 CI 在 Node v24 + gcc/g++ 环境下构建生成；安装时 `install_callback` 直接离线复制到数据目录（几秒完成），**不再依赖 fnOS 联网编译**（fnOS 缺 gcc，此前正是安装卡死的根因）。
+- 应用本体：`hermes-web-ui`（版本 `0.6.35`，由 `config/bootstrap/hermes-studio-version.env` 记录，CI 自动与 npm `dist-tags.latest` 对齐）。FPK **默认包含** bundled 运行时 `app/node/`（含编译好的原生 node-pty），由 CI 在 Node v24 + gcc/g++ 环境下构建生成；安装时 `install_callback` 直接离线复制到数据目录（几秒完成），**不再依赖 fnOS 联网编译**（fnOS 缺 gcc，此前正是安装卡死的根因）。
 - 同时打包 **Hermes Agent 的 browser tools + TUI 依赖** 为 `app/hermes-agent-node/`，安装时直接复制到 Agent 目录并跳过后台 `npm install`，**首启不再长时间等待**。
-- 包版本（迭代号）：`0.6.33-25`
+- 包版本（迭代号）：`0.6.35-1`
 - 平台：`x86_64`（bundled 原生模块绑定 Linux x64 / Node 24 ABI）
 - 运行时依赖：`install_dep_apps=nodejs_v24`，由 fnOS 自动安装 Node.js v24
 - 参考打包格式：[iranee/fnos-hermes-agent](https://github.com/iranee/fnos-hermes-agent)
@@ -44,7 +44,8 @@ fnos-hermes-studio/
 ├── config/
 │   ├── privilege                    # 以 package 身份运行（hermes-studio 用户）
 │   ├── resource                     # 数据共享 + /usr/local/bin 链接
-│   └── bootstrap/hermes-studio-version.env   # 安装的 npm 版本 0.6.33
+│   ├── bootstrap/hermes-studio-version.env   # 安装的 hermes-web-ui npm 版本（0.6.35，auto-update 自动对齐）
+│   └── bootstrap/hermes-agent-version.env    # 内嵌 Hermes Agent 的 release 标签（v2026.7.20，auto-update 自动对齐）
 ├── app/
 │   ├── bin/hermes-web-ui            # 包装脚本（设置 Node/HERMES_WEB_UI_HOME 后调用官方 CLI）
 │   ├── node/                        # bundled hermes-web-ui node_modules（安装时复制到 data/node）
@@ -63,7 +64,7 @@ fnos-hermes-studio/
 ## 仓库说明（与构建相关）
 
 - `app/node/`（bundled 的 hermes-web-ui node_modules，含编译好的原生 node-pty）**不纳入 git**（见 `.gitignore`），因为体积大且 GitHub 拒绝 >100MB 文件。CI 在构建时由 `scripts/build-fpk.sh` 的 `ensure_node_bundle` 用 Node v24 + gcc/g++ npm install 并编译生成，FPK 安装时走离线复制，彻底摆脱 fnOS 缺 gcc 导致的安装卡死。
-- `app/hermes-agent-src/`（Hermes Agent Python 后端源码）**不纳入 git**。`scripts/build-fpk.sh` 构建时会尝试从 GitHub 下载；CI 在 GitHub 内网下载并嵌入 FPK，使 NAS 安装时跳过 `git clone`（避免 GnuTLS recv error 等网络问题导致应用启动不了）。
+- `app/hermes-agent-src/`（Hermes Agent Python 后端源码）**不纳入 git**。`scripts/build-fpk.sh` 构建时会按 `config/bootstrap/hermes-agent-version.env` 记录的 **release 标签**从 GitHub 下载对应版本（不再拉 `main` 分支，保证构建可复现、与上游发版对齐；标签下载失败才回退 `main`）；CI 在 GitHub 内网下载并嵌入 FPK，使 NAS 安装时跳过 `git clone`（避免 GnuTLS recv error 等网络问题导致应用启动不了）。
 - `dist/*.fpk`、根目录 `hermes-studio.fpk`、`fnpack.exe` 等构建产物同样不入库；正式发布包由 `.github/workflows/build.yml` 的 CI 自动产出。
 - `scripts/` 下部分本地部署/调试脚本含 NAS 真实凭据，已被 `.gitignore` 排除，**请勿手动加入**。
 
@@ -75,11 +76,25 @@ fnos-hermes-studio/
   - 带版本号 `fnos-hermes-studio_v<version>.fpk` → 留档，版本不同则累加。
 - 下载：仓库 **Releases** 页 → `latest` 即可拿到最新 fpk（或按版本号取历史附件）。
 
+## 自动更新上游版本
+
+`.github/workflows/auto-update.yml` 会**每天自动检查上游版本**，有更新就自动发版，无需手动干预：
+
+- **跟踪对象**：
+  - `hermes-web-ui`（npm，0.6.x 线）：取 `dist-tags.latest`。
+  - `hermes-agent`（GitHub release，日期版如 `v2026.7.20`）：取最新 release 标签。
+- **动作**：任一与 `config/bootstrap/*.env` 中记录不一致时，更新 env 文件与 `manifest` 版本号，`commit` 并 `push` 到 `main` → 触发 `build.yml` 重新构建并发布新 FPK（自动发版）。
+- **版本号规则**：web-ui 主版本变化则重置 build 计数为 1，否则 build+1（如 `0.6.33-25` → web-ui 升 `0.6.35` 得 `0.6.35-1`）。
+- **手动触发**：在 GitHub Actions 页面手动运行 `Auto-update upstream versions` workflow（`workflow_dispatch`）可立即检查。
+- **关闭自动更新**：删除/停用 `auto-update.yml` 即可恢复纯手动发版。
+
+> 自动更新只改版本号与 env 文件，不动业务代码；构建仍在 `build.yml` 完成，发布前仍经过 Verify 校验。
+
 ## 本地构建 FPK
 
 格式以飞牛官方文档为准：[developer.fnnas.com/docs/cli/fnpack](https://developer.fnnas.com/docs/cli/fnpack/)。`fnpack build` 会在生成 `.fpk` 前做文件与基础格式校验（manifest 必要字段、config JSON 合法、ICON 存在、`app/ cmd/ wizard/ app/{desktop_uidir}/` 存在）。
 
-> 本地构建时 `scripts/build-fpk.sh` 会自动 `npm install -g hermes-web-ui@0.6.33 --prefix app/node`（需本机有 Node v24 + gcc/g++/make/python3 以编译 node-pty）；若环境齐全则打包进 FPK 走离线安装，否则构建脚本会报错中止（避免产出缺 bundled node 的残包）。
+> 本地构建时 `scripts/build-fpk.sh` 会自动 `npm install -g hermes-web-ui@<HERMES_STUDIO_VERSION> --prefix app/node`（需本机有 Node v24 + gcc/g++/make/python3 以编译 node-pty）；若环境齐全则打包进 FPK 走离线安装，否则构建脚本会报错中止（避免产出缺 bundled node 的残包）。
 
 ### 方式一：官方 fnpack（推荐，100% 合规）
 
@@ -88,7 +103,7 @@ fnos-hermes-studio/
 ```bash
 cd fnos-hermes-studio
 fnpack build                      # 生成 hermes-studio.fpk（项目根）
-bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复制为 dist/fnos-hermes-studio_v0.6.33-25.fpk
+bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复制为 dist/fnos-hermes-studio_v0.6.35-1.fpk
 ```
 
 `scripts/build-fpk.sh` 会优先调用 `fnpack` / `fnpack.exe`（含仓库根的 `fnpack.exe`），由官方工具产出；未找到 fnpack 时回退到方式二。
@@ -98,7 +113,7 @@ bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复
 ```bash
 cd fnos-hermes-studio
 bash scripts/build-fpk.sh dist    # 无 fnpack 时复刻官方双层 tar.gz 格式
-# 产物：dist/fnos-hermes-studio_v0.6.33-25.fpk
+# 产物：dist/fnos-hermes-studio_v0.6.35-1.fpk
 ```
 
 脚本复刻官方 fnpack 的双层 tar.gz 格式：内层 `app.tgz`（app/ 目录）的 MD5 写入 `manifest.checksum`，外层再打包 `manifest / cmd / config / wizard / ICON / app.tgz`。经真实 `.fpk` 样本验证，结构与官方 `fnpack` 输出一致。
@@ -106,7 +121,7 @@ bash scripts/build-fpk.sh dist    # 无 fnpack 时复刻官方双层 tar.gz 格�
 ## 安装到飞牛 NAS
 
 1. 飞牛桌面打开「应用中心」→ 右上角「设置」→「手动安装应用」。
-2. 选择生成的 `fnos-hermes-studio_v0.6.33-25.fpk`，确认安装。
+2. 选择生成的 `fnos-hermes-studio_v0.6.35-1.fpk`，确认安装。
 3. 安装向导会出现「微信渠道访问控制」步骤：
    - **默认关闭**：微信 DM 保持白名单模式（`WEIXIN_DM_POLICY=allowlist`），只有 Web UI「设置-渠道-微信」里手动添加的用户才能发消息。
    - **勾选开关**：允许所有微信用户发送消息，安装脚本会自动写入 `WEIXIN_DM_POLICY=open` 与 `WEIXIN_ALLOW_ALL_USERS=true` 到 `~/.hermes/.env`，无需再手动改配置。

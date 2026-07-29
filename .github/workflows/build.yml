@@ -265,8 +265,12 @@ jobs:
           fi
           ASSET="dist/fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk"
           [ -f "$ASSET" ] || { echo "::error:: 找不到 $ASSET"; exit 1; }
+          HERMES_WEBUI_VER="$(grep '^HERMES_STUDIO_VERSION=' config/bootstrap/hermes-studio-version.env | cut -d= -f2)"
+          HERMES_AGENT_VER="$(grep '^HERMES_AGENT_VERSION=' config/bootstrap/hermes-agent-version.env | cut -d= -f2)"
           cat > /tmp/relnotes.md <<'NOTE'
           Hermes Studio for fnOS — 稳定版 v${{ steps.target_version.outputs.target_version }}
+
+          **打包追踪的上游版本**（由 auto-update.yml 自动对齐）：hermes-web-ui `__WEBUI__` ｜ hermes-agent `__AGENT__`
 
           ## 本次更新（v${{ steps.target_version.outputs.target_version }}）
           - **Agent browser tools + TUI 依赖预装进 FPK（v0.6.33-25 修复 v0.6.33-24 路径 bug）**：
@@ -309,6 +313,7 @@ jobs:
           固定版本请从本 Release 附件下载 fnos-hermes-studio_v${{ steps.target_version.outputs.target_version }}.fpk；
           最新滚动版见 Release latest。
           NOTE
+          sed -i "s/__WEBUI__/${HERMES_WEBUI_VER}/; s/__AGENT__/${HERMES_AGENT_VER}/" /tmp/relnotes.md
           gh release create "$TAG" \
             --title "Hermes Studio v${{ steps.target_version.outputs.target_version }}" \
             --notes-file /tmp/relnotes.md \
