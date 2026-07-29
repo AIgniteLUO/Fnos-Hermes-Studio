@@ -200,11 +200,25 @@ jobs:
           else
             echo "⚠️ 未包含 Hermes Agent 离线源码包，安装时仍会尝试 git clone"
           fi
-          if echo "$INNER" | grep -qE '^(app/)?hermes-agent-node/node_modules/' \
-             && echo "$INNER" | grep -qE '^(app/)?hermes-agent-node/ui-tui/node_modules/'; then
-            echo "✅ 检测到 Agent browser tools + TUI 依赖（hermes-agent-node），首启将跳过 npm install"
+          # Agent browser tools + TUI 依赖（hermes-agent-node）：v0.6.33-24 曾因打包脚本
+          # 路径 bug 把构建机绝对路径（/home/runner/work/.../.agent-node-work）带进包，
+          # 导致 hermes-agent-node/node_modules 根目录不存在，install_callback 静默回退
+          # 到 npm install。这里改为硬性校验：① 禁止污染路径；② 必须含 node_modules 根目录
+          # （已含 hoist 的 TUI 依赖）；ui-tui 单独依赖缺失仅警告，不阻断发布。
+          if echo "$INNER" | grep -qE 'hermes-agent-node/(home/|.*/\.agent-node-work/)'; then
+            echo "::error:: hermes-agent-node 内混入构建机绝对路径，打包脚本路径处理 bug 复发，构建中止"
+            exit 1
+          fi
+          if echo "$INNER" | grep -qE '^(app/)?hermes-agent-node/node_modules/'; then
+            echo "✅ 检测到 Agent browser tools 依赖（hermes-agent-node/node_modules），首启将跳过 npm install"
           else
-            echo "::warning:: 未包含 hermes-agent-node 依赖包，首启后台仍会联网跑 npm install"
+            echo "::error:: FPK 未包含 hermes-agent-node/node_modules，首启仍会联网跑 npm install，构建中止"
+            exit 1
+          fi
+          if echo "$INNER" | grep -qE '^(app/)?hermes-agent-node/ui-tui/node_modules/'; then
+            echo "✅ 检测到 Agent TUI 依赖（hermes-agent-node/ui-tui/node_modules）"
+          else
+            echo "⚠️ 未包含 hermes-agent-node/ui-tui/node_modules，TUI 可能仍需联网安装（其余依赖已离线）"
           fi
 
       # 额外生成一个固定文件名，便于「总是下载最新版」。
@@ -255,10 +269,15 @@ jobs:
           Hermes Studio for fnOS — 稳定版 v${{ steps.target_version.outputs.target_version }}
 
           ## 本次更新（v${{ steps.target_version.outputs.target_version }}）
-          - **Agent browser tools + TUI 依赖预装进 FPK（v0.6.33-24，解决首启长时间等待）**：
+          - **Agent browser tools + TUI 依赖预装进 FPK（v0.6.33-25 修复 v0.6.33-24 路径 bug）**：
             - 新增 `app/hermes-agent-node/`，在 CI（Linux x64 + Node v24）把 Hermes Agent 的
               browser tools 依赖（agent-browser / @streamdown/math）与 ui-tui workspace 依赖装好，
               按相对路径镜像进包。
+            - **v0.6.33-24 复盘**：该版虽打进了 hermes-agent-node，但打包脚本把构建机绝对路径
+              （`/home/runner/work/.../.agent-node-work`）一并带进包内，导致
+              `hermes-agent-node/node_modules` 根目录不存在，install_callback 静默回退到 npm install，
+              等于没生效。**v0.6.33-25 已修复**：改用尾斜杠复制 + `realpath --relative-to` 计算相对
+              路径，并增加构建机路径防御性拦截；CI 校验也改为硬性失败，杜绝此类坏包再发出。
             - 安装时 install_callback 检测到 bundled 的 `hermes-agent-node` 后直接复制到 Agent 目录，
               并把官方 installer 的 `NODE_DEPS_TIMEOUT` 压到 1s，**跳过后台 npm install**
               （官方默认 600s，慢网会卡很久），首启大幅提速。

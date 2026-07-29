@@ -188,7 +188,7 @@ ensure_node_bundle
 ensure_hermes_agent_node_bundle() {
     local src_dir="$ROOT/app/hermes-agent-src"
     local node_bundle="$ROOT/app/hermes-agent-node"
-    local work="$ROOT/.agent-node-work"
+    local work
 
     # 无源码或本地缺 node/npm 时跳过：不阻断整体构建，安装回退到在线 npm install。
     if [ ! -f "$src_dir/package.json" ]; then
@@ -203,15 +203,20 @@ ensure_hermes_agent_node_bundle() {
     done
 
     # 已存在且关键 node_modules 已生成则复用（本地增量/缓存）
-    if [ -d "$node_bundle/node_modules" ] && [ -d "$node_bundle/ui-tui/node_modules" ]; then
+    if [ -d "$node_bundle/node_modules" ]; then
         echo "使用已缓存的 agent node bundle: $node_bundle"
         return 0
     fi
 
     echo "准备 agent node bundle（browser tools + TUI 依赖）..."
-    rm -rf "$node_bundle" "$work"
+    rm -rf "$node_bundle"
     mkdir -p "$node_bundle"
-    cp -a "$src_dir" "$work"
+    # 关键：用尾斜杠把源码「内容」复制到 work 根目录，避免 cp 生成
+    # work/<src_basename>/ 嵌套层。嵌套层会把构建机绝对路径（如
+    # /home/runner/work/.../.agent-node-work）带进 hermes-agent-node/，
+    # 导致 install_callback 找不到 hermes-agent-node/node_modules 而回退 npm install。
+    work="$(mktemp -d)"
+    cp -a "$src_dir/." "$work/"
 
     (
         cd "$work"
@@ -228,19 +233,31 @@ ensure_hermes_agent_node_bundle() {
         fi
     ) || true
 
-    # 收集每个 package root 的 node_modules，按相对路径镜像进 hermes-agent-node/
+    # 收集每个含 package.json 的目录（排除 node_modules 内）的 node_modules，
+    # 按「相对 agent 源码根」的路径镜像进 hermes-agent-node/<rel>/node_modules。
+    # install_callback 端 find hermes-agent-node -name node_modules 后套用相同相对结构
+    # 复制回 Agent 目录，因此这里 rel 必须是干净的相对路径（绝不可含构建机绝对路径）。
+    local count=0
     while IFS= read -r pkgroot; do
-        if [ -d "$pkgroot/node_modules" ]; then
-            local rel="${pkgroot#$work/}"
-            mkdir -p "$node_bundle/$rel"
-            cp -a "$pkgroot/node_modules" "$node_bundle/$rel/"
-        fi
+        [ -d "$pkgroot/node_modules" ] || continue
+        local rel
+        rel="$(realpath --relative-to="$work" "$pkgroot")"
+        # 防御：若相对路径异常（绝对路径或意外混入构建机路径），跳过以免污染包
+        case "$rel" in
+            /*|*runner*|*.agent-node-work*)
+                echo "::warning:: 跳过异常的 node_modules 路径: $rel"
+                continue ;;
+        esac
+        [ "$rel" = "." ] && rel=""
+        mkdir -p "$node_bundle/$rel"
+        cp -a "$pkgroot/node_modules" "$node_bundle/$rel/"
+        count=$((count + 1))
     done < <(find "$work" -name package.json -not -path '*/node_modules/*' -exec dirname {} \;)
 
     rm -rf "$work"
 
     if [ -d "$node_bundle/node_modules" ]; then
-        echo "✅ agent node bundle 已生成: $node_bundle"
+        echo "✅ agent node bundle 已生成: $node_bundle (共 $count 个 node_modules 树)"
     else
         echo "::warning:: agent node bundle 未生成 node_modules，安装将回退在线 npm"
     fi
