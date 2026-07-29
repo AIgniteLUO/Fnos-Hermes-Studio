@@ -106,6 +106,79 @@ ensure_hermes_agent_src() {
 
 ensure_hermes_agent_src
 
+# ── 准备 bundled node（hermes-web-ui 预装 node_modules，含编译好的原生 node-pty） ──
+# 根因：早期 FPK 未打进 app/node，install_callback 回退 npm install -g，而 fnOS 缺
+# 少 gcc/g++ 无法编译 node-pty（原生模块），导致安装卡死/超时（UI 停在 ~55%）。
+# 这里在 CI（Linux x64 + Node v24 + gcc/g++）上预装并编译，打包进 FPK，安装时
+# install_callback 直接走 Path A（离线复制，几秒完成），彻底摆脱超时与网络依赖。
+ensure_node_bundle() {
+    local ver_file="$ROOT/config/bootstrap/hermes-studio-version.env"
+    local ver="0.6.33"
+    if [ -f "$ver_file" ]; then
+        ver="$(grep -E '^HERMES_STUDIO_VERSION=' "$ver_file" | awk -F'=' '{print $2}' | tr -d ' ')"
+        [ -z "$ver" ] && ver="0.6.33"
+    fi
+
+    local node_dir="$ROOT/app/node"
+    local pkg_dir="$node_dir/lib/node_modules/hermes-web-ui"
+    local bin_mjs="$pkg_dir/bin/hermes-web-ui.mjs"
+
+    # 已存在则复用（本地增量构建 / 缓存）
+    if [ -f "$bin_mjs" ] && [ -f "$pkg_dir/package.json" ]; then
+        echo "使用已缓存的 bundled node: $node_dir (hermes-web-ui@$ver)"
+    else
+        echo "准备 bundled node（编译 hermes-web-ui@$ver 及其原生依赖）..."
+        rm -rf "$node_dir"
+        mkdir -p "$node_dir"
+
+        # 必须存在 gcc/g++/make/python3，否则 node-pty 无法编译
+        for t in gcc g++ make python3 node npm; do
+            if ! command -v "$t" >/dev/null 2>&1; then
+                echo "::error:: 构建 bundled node 缺少必需工具: $t" >&2
+                exit 1
+            fi
+        done
+        echo "node: $(node --version)  npm: $(npm --version)"
+
+        # 关键：用 --prefix 把 hermes-web-ui 装成全局布局到 app/node，
+        # 生成 app/node/bin/hermes-web-ui（软链）+ app/node/lib/node_modules/hermes-web-ui。
+        # 若 Node v24 无预编译，npm 会回退 node-gyp 在此处（有 gcc）编译 node-pty。
+        if ! npm install -g --no-audit --no-fund --prefix "$node_dir" "hermes-web-ui@${ver}"; then
+            echo "::error:: npm install hermes-web-ui@${ver} 失败" >&2
+            exit 1
+        fi
+
+        if [ ! -f "$bin_mjs" ]; then
+            echo "::error:: bundled hermes-web-ui 入口缺失: $bin_mjs" >&2
+            exit 1
+        fi
+    fi
+
+    # 校验 node-pty 原生模块确实编译出来了（不是只下了 prebuilds/）
+    local npty_dir="$pkg_dir/node_modules/node-pty"
+    if [ -d "$npty_dir" ]; then
+        local built
+        built=$(ls "$npty_dir"/build/Release/*.node 2>/dev/null | head -1)
+        if [ -z "$built" ]; then
+            # 也许 node-pty 被 hoist 到更外层
+            built=$(find "$node_dir/lib/node_modules" -path '*/node-pty/build/Release/*.node' 2>/dev/null | head -1)
+        fi
+        if [ -n "$built" ]; then
+            echo "✅ node-pty 原生模块已编译: $built"
+        else
+            echo "::error:: 未找到 node-pty 编译产物（build/Release/*.node），bundled node 不完整，构建中止" >&2
+            exit 1
+        fi
+    else
+        echo "::error:: 未找到 node-pty 目录，bundled node 可能不完整，构建中止" >&2
+        exit 1
+    fi
+
+    echo "bundled node 准备完成: $node_dir"
+}
+
+ensure_node_bundle
+
 # ── 探测 fnpack ──
 FNPACK=""
 for cand in "$ROOT/fnpack.exe" "$ROOT/fnpack" fnpack fnpack.exe; do

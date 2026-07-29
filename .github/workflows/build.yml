@@ -3,10 +3,10 @@ name: Build fnOS Hermes Studio FPK
 # 每次 push 到 main 自动构建 FPK，并发布为滚动预发布版本（latest）。
 # 也可手动触发（workflow_dispatch），手动时可覆盖版本号。
 #
-# 说明：仓库不纳入 bundled 运行时 app/node（体积大 / GitHub 拒 >100MB）。
-# 打出的 FPK 在安装时由 install_callback 走 npm install 兜底安装 hermes-web-ui
-# （与已在 249 上验证可用的历史包行为一致）；如需离线安装，可在本地先
-# `npm install -g hermes-web-ui@0.6.33 --prefix app/node` 再构建。
+# 说明：FPK 在 CI 构建时把 hermes-web-ui 的 node_modules（含编译好的原生 node-pty）
+# 作为 app/node 打进包（scripts/build-fpk.sh 的 ensure_node_bundle）。安装时
+# install_callback 走 Path A 离线复制，几秒完成，不再依赖 fnOS 联网编译（fnOS 缺 gcc）。
+# app/node 不入库（.gitignore 排除），每次 CI 由 Node v24 + gcc/g++ 重新编译生成。
 on:
   push:
     branches:
@@ -83,6 +83,15 @@ jobs:
       - name: Create dist directory
         run: mkdir -p dist
 
+      # bundled node（含原生 node-pty）必须在与 fnOS 运行时相同 ABI 的环境下编译，
+      # 否则 fnOS 上的 nodejs_v24 加载不了。这里固定 Node v24，且 ubuntu-latest 自带
+      # gcc/g++/make/python3 可编译 node-pty。
+      - name: Setup Node.js v24 (for bundled node ABI match)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
       # Hermes Agent 官方 install.sh 默认 git clone NousResearch/hermes-agent。
       # 大量 NAS 无法稳定连接 GitHub，导致安装后 Agent 启动不了。
       # CI 在 GitHub 内网下载源码并嵌入 FPK，install_callback 会优先用本地包
@@ -142,8 +151,8 @@ jobs:
           echo "fpks=$TARGET_NAME" >> $GITHUB_OUTPUT
 
       # 校验 FPK 基本结构（外层含 manifest / cmd/ / wizard/ / app.tgz 必须存在）。
-      # 不强制要求 app/node：默认 FPK 不含 bundled 运行时，安装时由 install_callback
-      # 走 npm install 兜底（与历史可用包一致）。
+      # app/node（bundled 运行时，含编译好的 node-pty）为强制项：缺它安装会回退
+      # npm install，而 fnOS 无 gcc 编不出 node-pty → 安装卡死。绝不允许再发这种包。
       - name: Verify FPK structure
         run: |
           FPK="dist/fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk"
@@ -160,10 +169,16 @@ jobs:
           echo "$INNER" | grep -qE '^app/(bin|skills|ui)/' \
             && echo "ℹ️ app.tgz 内含 app/bin|skills|ui" \
             || echo "⚠️ app.tgz 结构异常"
-          if echo "$INNER" | grep -q '^app/node/lib/node_modules/hermes-web-ui/'; then
-            echo "ℹ️ 检测到 bundled 运行时 app/node（离线安装）"
+          if echo "$INNER" | grep -q '^app/node/lib/node_modules/hermes-web-ui/bin/hermes-web-ui.mjs$'; then
+            echo "✅ 检测到 bundled 运行时 app/node（离线安装，无需联网编译）"
           else
-            echo "ℹ️ 未包含 app/node，安装时将走 npm install 兜底（需联网）"
+            echo "::error:: FPK 未包含 bundled app/node，安装将回退 npm install 并因 fnOS 缺 gcc 失败，构建中止"
+            exit 1
+          fi
+          if echo "$INNER" | grep -qE 'node-pty/build/Release/.*\.node$'; then
+            echo "✅ node-pty 原生模块已打包（离线安装无需联网编译）"
+          else
+            echo "::warning:: 未检测到 node-pty 编译产物，离线安装可能仍需联网编译"
           fi
           if echo "$INNER" | grep -q '^app/hermes-agent-src/pyproject.toml$'; then
             echo "✅ 检测到 Hermes Agent 离线源码包，安装时将跳过 git clone"
@@ -218,17 +233,20 @@ jobs:
           cat > /tmp/relnotes.md <<'NOTE'
           Hermes Studio for fnOS — 稳定版 v${{ steps.target_version.outputs.target_version }}
 
-          ## 本次更新（v0.6.33-20）
+          ## 本次更新（v0.6.33-21）
+          - **修复"安装卡在 55%"根因**：FPK 现在在 CI（Linux x64 + Node v24 + gcc/g++）把
+            hermes-web-ui 的 node_modules（含编译好的原生 node-pty）作为 `app/node` 打进包。
+            安装时 install_callback 走 Path A 离线复制（几秒完成），**不再**回退 npm install
+            —— fnOS 缺 gcc/g++ 编不出 node-pty 原生模块，此前正是这个原因导致安装阻塞/超时。
           - 安装前自动环境检查：检测 Node.js、检查 8648 端口占用、杀掉占用进程及所有 Hermes
-            残留进程（hermes-web-ui / hermes gateway / bridge / monitor / dashboard / MCP 等）、
-            清理 IPC socket / PID 文件、修复数据目录属主，避免旧版本残留导致 EACCES / EADDRINUSE
-            安装/启动失败（参考 fnos-hermes-agent v0.20.39 官方修复）。
-          - 增强 Hermes Agent 后台安装鲁棒性：去掉 `set -e` 改为显式错误检查，安装失败时记录
-            `failed` marker 并在启动时自动重试，避免一次网络/权限抖动就彻底装不上。
-          - 离线安装 Hermes Agent：FPK 内嵌 hermes-agent 源码包，安装时跳过 GitHub git clone，
-            修复大量 NAS 因网络不稳（GnuTLS recv error）导致"安装完启动不了"的问题。
-          - 微信 DM 策略默认白名单，安装向导可一键开放给所有用户
-            （WEIXIN_DM_POLICY=open + WEIXIN_ALLOW_ALL_USERS=true）。
+            残留进程、清理 IPC socket / PID 文件、修复数据目录属主，避免旧版本残留导致
+            EACCES / EADDRINUSE 安装/启动失败。
+          - 增强 Hermes Agent 后台安装鲁棒性：安装失败时记录 `failed` marker 并在启动时自动重试。
+          - 离线安装 Hermes Agent：FPK 内嵌 hermes-agent 源码包，安装时跳过 GitHub git clone。
+          - 微信 DM 策略默认白名单，安装向导可一键开放给所有用户。
+
+          > ⚠️ 升级前若旧版本残留 root 进程占用 8648 端口，安装前环境检查会自动清理；
+          > 若仍异常，可在飞牛终端手动 `pkill -9 -f hermes` 后再重装。
 
           ## 安装说明
           1. 飞牛应用中心 -> 手动安装 -> 选择本 fpk。
