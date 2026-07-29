@@ -178,23 +178,24 @@ jobs:
           ls -lh "$TMPDIR/app.tgz" || echo "::error:: 未找到 $TMPDIR/app.tgz"
           INNER=$(tar tzf "$TMPDIR/app.tgz" 2>/dev/null)
           echo "INNER 行数: $(echo "$INNER" | wc -l)"
-          echo "INNER 前 5 行:"
-          echo "$INNER" | head -5
-          echo "$INNER" | grep -qE '^app/(bin|skills|ui)/' \
-            && echo "ℹ️ app.tgz 内含 app/bin|skills|ui" \
+          # fnpack 打出的 app.tgz 内部条目不带 app/ 前缀（fnOS 解包时再放回 app/），
+          # 而兜底纯 tar 构建（tar -cf - app）内部带 app/ 前缀。两种都合法，
+          # 因此所有校验正则都允许可选的 app/ 前缀，避免误判。
+          echo "$INNER" | grep -qE '^(app/)?(bin|skills|ui)/' \
+            && echo "ℹ️ app.tgz 内含 bin|skills|ui" \
             || echo "⚠️ app.tgz 结构异常"
-          if echo "$INNER" | grep -q '^app/node/lib/node_modules/hermes-web-ui/bin/hermes-web-ui.mjs$'; then
+          if echo "$INNER" | grep -qE '^(app/)?node/lib/node_modules/hermes-web-ui/bin/hermes-web-ui\.mjs$'; then
             echo "✅ 检测到 bundled 运行时 app/node（离线安装，无需联网编译）"
           else
             echo "::error:: FPK 未包含 bundled app/node，安装将回退 npm install 并因 fnOS 缺 gcc 失败，构建中止"
             exit 1
           fi
-          if echo "$INNER" | grep -qE 'node-pty/build/Release/.*\.node$'; then
+          if echo "$INNER" | grep -qE '(app/)?node-pty/build/Release/[^/]*\.node$'; then
             echo "✅ node-pty 原生模块已打包（离线安装无需联网编译）"
           else
             echo "::warning:: 未检测到 node-pty 编译产物，离线安装可能仍需联网编译"
           fi
-          if echo "$INNER" | grep -q '^app/hermes-agent-src/pyproject.toml$'; then
+          if echo "$INNER" | grep -qE '^(app/)?hermes-agent-src/pyproject\.toml$'; then
             echo "✅ 检测到 Hermes Agent 离线源码包，安装时将跳过 git clone"
           else
             echo "⚠️ 未包含 Hermes Agent 离线源码包，安装时仍会尝试 git clone"
