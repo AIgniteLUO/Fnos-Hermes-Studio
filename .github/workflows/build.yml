@@ -248,7 +248,10 @@ jobs:
           cat > /tmp/relnotes.md <<'NOTE'
           Hermes Studio for fnOS — 稳定版 v${{ steps.target_version.outputs.target_version }}
 
-          ## 本次更新（v0.6.33-21）
+          ## 本次更新（v${{ steps.target_version.outputs.target_version }}）
+          - **修复"设置目录权限失败"安装报错**：
+            - build-fpk.sh 打包前统一规范化 `app/` 权限，避免 CI runner 的 uid/gid 与特殊权限位被带入 FPK。
+            - install_callback 移除 `set -e`，所有 `chmod/chown` 改为最佳 effort，非致命失败不再导致整个安装退出。
           - **修复"安装卡在 55%"根因**：FPK 现在在 CI（Linux x64 + Node v24 + gcc/g++）把
             hermes-web-ui 的 node_modules（含编译好的原生 node-pty）作为 `app/node` 打进包。
             安装时 install_callback 走 Path A 离线复制（几秒完成），**不再**回退 npm install
@@ -260,8 +263,7 @@ jobs:
           - 离线安装 Hermes Agent：FPK 内嵌 hermes-agent 源码包，安装时跳过 GitHub git clone。
           - 微信 DM 策略默认白名单，安装向导可一键开放给所有用户。
 
-          > ⚠️ 升级前若旧版本残留 root 进程占用 8648 端口，安装前环境检查会自动清理；
-          > 若仍异常，可在飞牛终端手动 `pkill -9 -f hermes` 后再重装。
+          > ⚠️ 若从旧版本升级仍异常，建议先在飞牛终端手动 `pkill -9 -f hermes` 并卸载旧版后再重装。
 
           ## 安装说明
           1. 飞牛应用中心 -> 手动安装 -> 选择本 fpk。

@@ -179,6 +179,42 @@ ensure_node_bundle() {
 
 ensure_node_bundle
 
+# ── 规范化 app/ 目录权限与属主 ──
+# 根因：CI runner（uid=1001）打包时会把 runner 的 uid/gid 写入 app.tgz。
+# fnOS 解压后若尝试 chown 到应用用户，某些只读/特殊权限文件可能失败，
+# 导致应用中心报"设置目录权限失败"。这里在打包前统一规范化：
+#   - 所有文件对所有人可读，目录可进入
+#   - 保留原有可执行位（bin/ 脚本、.node 等）
+#   - 去掉 setuid/setgid/sticky 等特殊位
+#   - 尽量把属主归到 root（CI 若没 root 则忽略失败）
+normalize_app_permissions() {
+    echo "规范 app/ 目录权限，避免带入构建机属主..."
+    # 先尝试把属主改成 root:root；CI 普通用户会失败，不影响后续
+    chown -R root:root app/ 2>/dev/null || true
+    # 去掉特殊权限位（setuid/setgid/sticky），保留普通 rwx
+    find app/ -type f -exec chmod a-s {} + 2>/dev/null || true
+    find app/ -type d -exec chmod a-s {} + 2>/dev/null || true
+    # 目录统一 755
+    find app/ -type d -exec chmod 755 {} + 2>/dev/null || true
+    # 普通文件统一 644
+    find app/ -type f -exec chmod 644 {} + 2>/dev/null || true
+    # 恢复真正需要可执行的文件：shebang 脚本、.mjs CLI、二进制、.so/.node
+    find app/ -type f \( -name '*.sh' -o -name '*.mjs' -o -name '*.js' -o -name '*.cjs' \
+        -o -name '*.node' -o -name '*.so' -o -name '*.so.*' -o -name 'hermes' \
+        -o -name 'python3*' -o -name 'uv' -o -name 'uvx' \) \
+        -exec chmod 755 {} + 2>/dev/null || true
+    # 对 node_modules/.bin 下的 wrapper 也加可执行
+    if [ -d app/node/lib/node_modules/.bin ]; then
+        chmod -R 755 app/node/lib/node_modules/.bin/* 2>/dev/null || true
+    fi
+    if [ -d app/node/bin ]; then
+        chmod -R 755 app/node/bin/* 2>/dev/null || true
+    fi
+    echo "app/ 权限规范化完成"
+}
+
+normalize_app_permissions
+
 # ── 探测 fnpack ──
 FNPACK=""
 for cand in "$ROOT/fnpack.exe" "$ROOT/fnpack" fnpack fnpack.exe; do

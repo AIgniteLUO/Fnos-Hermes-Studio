@@ -9,7 +9,10 @@
 ###
 ### 运行时依赖：manifest 中 install_dep_apps=nodejs_v24，由 fnOS 自动安装 Node.js 运行时。
 
-set -e
+# 注意：不 set -e。install_callback 里会执行大量 chmod/chown/pkill 等
+# 可能因环境差异（用户/卷/残留 root 文件）失败的命令；若 set -e，任一
+# 非关键命令失败都会导致整个安装退出，fnOS 会提示"设置目录权限失败"。
+# 关键步骤（复制文件、写入 marker 等）显式检查并退出；其余容错继续。
 
 # TRIM_PKGVAR 在部分安装流程（如升级回退）中可能为空，务必兜底到 /tmp
 LOG_FILE="${TRIM_PKGVAR:-/tmp/hermes-studio-var}/info.log"
@@ -210,7 +213,8 @@ preinstall_cleanup() {
         log_msg "Fixing ownership for ${TRIM_USERNAME} before install ..."
         for d in "${DATA_DIR}" "${HERMES_HOME}" "${HERMES_AGENT_ROOT}" "${TRIM_PKGHOME}" "${TRIM_PKGVAR}"; do
             [ -d "${d}" ] || continue
-            chown -R "${TRIM_USERNAME}:${TRIM_USERNAME}" "${d}" 2>/dev/null || log_msg "WARNING: chown ${d} failed"
+            chown -R "${TRIM_USERNAME}:${TRIM_USERNAME}" "${d}" 2>/dev/null || \
+                log_msg "WARNING: chown ${d} failed (non-fatal)"
         done
     fi
 
@@ -223,8 +227,14 @@ preinstall_cleanup
 # 3. 创建数据目录
 # ---------------------------------------------------------------------------
 log_msg "Creating data directories under ${DATA_DIR} ..."
-mkdir -p "${DATA_DIR}"
-mkdir -p "${TRIM_PKGVAR}"
+if ! mkdir -p "${DATA_DIR}" 2>/dev/null; then
+    toast_err "无法创建数据目录 ${DATA_DIR}，请检查父目录权限"
+    exit 1
+fi
+if ! mkdir -p "${TRIM_PKGVAR}" 2>/dev/null; then
+    toast_err "无法创建日志/变量目录 ${TRIM_PKGVAR}，请检查父目录权限"
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 4. 安装 / 升级 hermes-web-ui
@@ -326,7 +336,7 @@ ensure_hermes_agent_background() {
     # install_callback 在 fnOS 中可能以普通用户运行，chown 失败不致命，
     # cmd/main start 会再次以 root 身份修复。
     if [ -n "${TRIM_USERNAME}" ]; then
-        chown -R "${TRIM_USERNAME}:${TRIM_USERNAME}" "${HERMES_HOME}" "${HERMES_AGENT_ROOT}" 2>>"${LOG_FILE}" || \
+        chown -R "${TRIM_USERNAME}:${TRIM_USERNAME}" "${HERMES_HOME}" "${HERMES_AGENT_ROOT}" 2>/dev/null || \
             log_msg "WARNING: pre-chown hermes-home/agent to ${TRIM_USERNAME} failed (will retry in cmd/main)"
     fi
 
@@ -428,7 +438,8 @@ rm -f "\${MARKER}"
     rm -f /tmp/hermes-agent-bridge.sock /tmp/hermes-web-ui.sock 2>/dev/null || true
     if command -v chown >/dev/null 2>&1 && id "\${APP_USER}" >/dev/null 2>&1; then
         mkdir -p "\$(dirname "\${AGENT_ROOT}")" "\${HERMES_HOME}"
-        chown -R "\${APP_USER}:\${APP_USER}" "\$(dirname "\${AGENT_ROOT}")" "\${HERMES_HOME}" 2>/dev/null || true
+        chown -R "\${APP_USER}:\${APP_USER}" "\$(dirname "\${AGENT_ROOT}")" "\${HERMES_HOME}" 2>/dev/null || \
+            echo "WARNING: background chown failed (non-fatal)" >&2
     fi
 
     # 1) 确保目标目录可写。install.sh 不允许目标目录已存在且非 git 仓库，先清理。
@@ -474,9 +485,12 @@ rm -f "\${MARKER}"
 
     # 5) 确保应用用户能读写 Agent 与 HOME 目录（后台脚本可能以 root 运行）
     echo ">>> Fixing permissions ..."
-    chown -R "\${APP_USER}:\${APP_USER}" "\${AGENT_ROOT}" "\${HERMES_HOME}" 2>/dev/null || true
-    chmod -R 755 "\${AGENT_ROOT}" 2>/dev/null || true
-    chmod -R u+rwX "\${HERMES_HOME}" 2>/dev/null || true
+    chown -R "\${APP_USER}:\${APP_USER}" "\${AGENT_ROOT}" "\${HERMES_HOME}" 2>/dev/null || \
+        echo "WARNING: final chown failed (non-fatal)" >&2
+    chmod -R 755 "\${AGENT_ROOT}" 2>/dev/null || \
+        echo "WARNING: chmod agent failed (non-fatal)" >&2
+    chmod -R u+rwX "\${HERMES_HOME}" 2>/dev/null || \
+        echo "WARNING: chmod hermes-home failed (non-fatal)" >&2
 
     echo "=== Hermes Agent background install finished at \$(date '+%Y-%m-%d %H:%M:%S') ==="
 } >> "\${LOG_FILE}" 2>&1
@@ -485,7 +499,7 @@ echo "success" > "\${MARKER}"
 rm -f "\${PID_FILE}"
 AGENT_EOF
 
-    chmod +x "${BG_SCRIPT}"
+    chmod +x "${BG_SCRIPT}" 2>/dev/null || true
 
     # 如果后台安装已在运行，避免重复启动
     if [ -f "${BG_PID_FILE}" ]; then
@@ -545,28 +559,32 @@ install_fnos_skills() {
     log_msg "fnOS trim-cli skill installed to ${dst}"
 }
 
-install_fnos_skills || exit 1
+install_fnos_skills || { toast_err "复制飞牛 Skill 失败"; exit 1; }
 
 # ---------------------------------------------------------------------------
-# 6. 修复权限
+# 6. 修复权限（全部容错，不再因权限命令失败而退出安装）
 # ---------------------------------------------------------------------------
 # 注意：Hermes Agent 可能仍在后台安装。这里先对已经存在的文件执行 chown，
 # 后台脚本自己也会再 chown 一次；cmd/main start 还会做最终修复。
 if [ -n "${TRIM_USERNAME}" ]; then
-    log_msg "Fixing permissions for ${TRIM_USERNAME} ..."
+    log_msg "Fixing permissions for ${TRIM_USERNAME} (best-effort) ..."
     for d in "${DATA_DIR}" "${HERMES_HOME}" "${HERMES_AGENT_ROOT}"; do
         [ -d "${d}" ] || continue
-        chown -R "${TRIM_USERNAME}:${TRIM_USERNAME}" "${d}" 2>>"${LOG_FILE}" || log_msg "WARNING: chown ${d} failed"
+        chown -R "${TRIM_USERNAME}:${TRIM_USERNAME}" "${d}" 2>/dev/null || \
+            log_msg "WARNING: chown ${d} failed (non-fatal)"
     done
     # 确保 HERMES_HOME 对应用用户可写（Agent config/skills 注入需要）
     if [ -d "${HERMES_HOME}" ]; then
-        chmod -R u+rwX "${HERMES_HOME}" 2>>"${LOG_FILE}" || log_msg "WARNING: chmod hermes-home failed"
+        chmod -R u+rwX "${HERMES_HOME}" 2>/dev/null || \
+            log_msg "WARNING: chmod hermes-home failed (non-fatal)"
     fi
     # 确保 Agent 目录对所有用户可执行，避免非 root 环境下 [ -x ] 检测失败
     if [ -d "${HERMES_AGENT_ROOT}" ]; then
-        chmod -R 755 "${HERMES_AGENT_ROOT}" 2>>"${LOG_FILE}" || log_msg "WARNING: chmod hermes-agent failed"
+        chmod -R 755 "${HERMES_AGENT_ROOT}" 2>/dev/null || \
+            log_msg "WARNING: chmod hermes-agent failed (non-fatal)"
     fi
-    chmod -R 750 "${DATA_DIR}" 2>>"${LOG_FILE}" || log_msg "WARNING: chmod failed"
+    chmod -R 750 "${DATA_DIR}" 2>/dev/null || \
+        log_msg "WARNING: chmod data failed (non-fatal)"
 else
     log_msg "TRIM_USERNAME empty, skip permission fix"
 fi
@@ -615,8 +633,8 @@ ENV_EOF
         done
 
         if [ -n "${TRIM_USERNAME}" ]; then
-            chown -R "${TRIM_USERNAME}:${TRIM_USERNAME}" "$(dirname "${hermes_env}")" 2>>"${LOG_FILE}" || \
-                log_msg "WARNING: chown $(dirname "${hermes_env}") failed"
+            chown -R "${TRIM_USERNAME}:${TRIM_USERNAME}" "$(dirname "${hermes_env}")" 2>/dev/null || \
+                log_msg "WARNING: chown $(dirname "${hermes_env}") failed (non-fatal)"
         fi
         chmod 600 "${hermes_env}" 2>/dev/null || true
         log_msg "Weixin DM policy set to OPEN (all users allowed)"
