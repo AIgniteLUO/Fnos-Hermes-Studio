@@ -165,7 +165,13 @@ jobs:
           done
           echo "✅ 基本结构完整 (manifest / cmd / wizard / app.tgz)"
           # 进一步确认 app.tgz 内含 app 运行时入口，并判断是否有 bundled app/node
-          INNER=$(tar xzf "$FPK" -O app.tgz 2>/dev/null | tar tzf - 2>/dev/null)
+          # 注意：app.tgz 体积大（含 node_modules / hermes-agent-src），不能用
+          # `tar xzf "$FPK" -O app.tgz | tar tzf -` 这种管道方式——大流会触发
+          # `tar: stdout: write error`(SIGPIPE)，导致 INNER 为空、误判未包含
+          # bundled node。正确做法是先解到临时文件，再对文件 tar tzf。
+          rm -f /tmp/app_inner.tgz
+          tar xzf "$FPK" app.tgz -O > /tmp/app_inner.tgz 2>/dev/null
+          INNER=$(tar tzf /tmp/app_inner.tgz 2>/dev/null)
           echo "$INNER" | grep -qE '^app/(bin|skills|ui)/' \
             && echo "ℹ️ app.tgz 内含 app/bin|skills|ui" \
             || echo "⚠️ app.tgz 结构异常"
