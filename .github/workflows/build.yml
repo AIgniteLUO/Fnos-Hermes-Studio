@@ -17,6 +17,12 @@ on:
         description: '版本号（格式：0.6.33-1，留空则使用 manifest 中的版本）'
         required: false
         default: ''
+  # 自动更新（auto-update.yml）完成并 push 版本 bump 后，由本触发器接力构建。
+  # 关键：auto-update 用默认 GITHUB_TOKEN 推送不会触发上面的 push 事件（GitHub 限制），
+  # 必须用 workflow_run 才能在本仓库内接力触发构建与发布。
+  workflow_run:
+    workflows: ["Auto-update upstream versions"]
+    types: [completed]
 
 permissions:
   contents: write

@@ -38,6 +38,17 @@ jobs:
           echo "agent_latest=$AGENT_LATEST" >> "$GITHUB_OUTPUT"
           echo "上游最新：hermes-web-ui=$WEBUI_LATEST  hermes-agent=$AGENT_LATEST"
 
+          # 校验两端版本真实存在，避免把不存在的标签/版本写进 env 导致后续构建失败
+          if ! curl -fsSL --max-time 30 "https://registry.npmjs.org/hermes-web-ui/$WEBUI_LATEST" >/dev/null 2>&1; then
+            echo "::error:: npm 上不存在 hermes-web-ui@$WEBUI_LATEST，中止更新"
+            exit 1
+          fi
+          if ! curl -fsSL --max-time 30 -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+               "https://api.github.com/repos/NousResearch/hermes-agent/tarball/$AGENT_LATEST" >/dev/null 2>&1; then
+            echo "::error:: GitHub 上不存在 hermes-agent 标签 $AGENT_LATEST（tarball 不可达），中止更新"
+            exit 1
+          fi
+
       - name: Compare and bump
         id: bump
         run: |
