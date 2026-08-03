@@ -7,7 +7,6 @@
 - 包版本（迭代号）：`0.6.35-2`
 - 平台：`x86_64`（bundled 原生模块绑定 Linux x64 / Node 24 ABI）
 - 运行时依赖：`install_dep_apps=nodejs_v24`，由 fnOS 自动安装 Node.js v24
-- 参考打包格式：[iranee/fnos-hermes-agent](https://github.com/iranee/fnos-hermes-agent)
 - 默认监听端口：`8648`（绑定 `0.0.0.0`，NAS 所在局域网可直接访问）
 
 ## 安装行为
