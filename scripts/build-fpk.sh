@@ -144,8 +144,10 @@ ensure_hermes_agent_src
 # ── 准备 bundled node（hermes-web-ui 预装 node_modules，含编译好的原生 node-pty） ──
 # 根因：早期 FPK 未打进 app/node，install_callback 回退 npm install -g，而 fnOS 缺
 # 少 gcc/g++ 无法编译 node-pty（原生模块），导致安装卡死/超时（UI 停在 ~55%）。
-# 这里在 CI（Linux x64 + Node v24 + gcc/g++）上预装并编译，打包进 FPK，安装时
-# install_callback 直接走 Path A（离线复制，几秒完成），彻底摆脱超时与网络依赖。
+# 现在优先从官方 GitHub Release（EKKOLearnAI/hermes-studio）下载「预构建好的 web-ui 包」
+# （hermes-web-ui-${ver}.tar.gz，含 bin/dist/node_modules，node-pty 原生模块已编译），
+# 与上游 release 严格对齐且比 npm 发布更及时；下载失败再回退 npm install -g 编译。
+# 打包进 FPK 后，安装时 install_callback 直接走 Path A（离线复制，几秒完成）。
 ensure_node_bundle() {
     local ver_file="$ROOT/config/bootstrap/hermes-studio-version.env"
     local ver="0.6.33"
@@ -162,26 +164,52 @@ ensure_node_bundle() {
     if [ -f "$bin_mjs" ] && [ -f "$pkg_dir/package.json" ]; then
         echo "使用已缓存的 bundled node: $node_dir (hermes-web-ui@$ver)"
     else
-        echo "准备 bundled node（编译 hermes-web-ui@$ver 及其原生依赖）..."
+        echo "准备 bundled node（获取 hermes-web-ui@$ver）..."
         rm -rf "$node_dir"
         mkdir -p "$node_dir"
 
-        # 必须存在 gcc/g++/make/python3，否则 node-pty 无法编译
-        for t in gcc g++ make python3 node npm; do
-            if ! command -v "$t" >/dev/null 2>&1; then
-                echo "::error:: 构建 bundled node 缺少必需工具: $t" >&2
+        # 官方在 GitHub Release 上随版本即时发布预构建好的 web-ui 包
+        # （含 bin/dist/node_modules，node-pty 原生模块已编译），比 npm 发布更及时，
+        # 且与上游 release 严格对齐。优先用官方产物；下载失败再回退 npm 编译。
+        local asset="hermes-web-ui-${ver}.tar.gz"
+        local url="https://github.com/EKKOLearnAI/hermes-studio/releases/download/v${ver}/${asset}"
+        local tmp
+        tmp="$(mktemp -d)"
+        local ok=0
+        if curl -fSL --max-time 300 -o "$tmp/$asset" "$url" 2>/dev/null; then
+            echo "已下载官方预构建产物: $url"
+            mkdir -p "$pkg_dir"
+            tar -xzf "$tmp/$asset" -C "$tmp"
+            if [ -d "$tmp/webui" ]; then
+                cp -a "$tmp/webui/." "$pkg_dir/"
+                ok=1
+            else
+                echo "::warning:: 官方产物结构异常（缺少顶层 webui/），回退 npm install"
+            fi
+        else
+            echo "::warning:: 下载官方产物失败（$url），回退 npm install -g hermes-web-ui@$ver"
+        fi
+
+        if [ "$ok" != "1" ]; then
+            # 回退路径：npm install（需 gcc/g++ 编译 node-pty）
+            for t in gcc g++ make python3 node npm; do
+                if ! command -v "$t" >/dev/null 2>&1; then
+                    echo "::error:: 回退 npm 编译缺少必需工具: $t" >&2
+                    exit 1
+                fi
+            done
+            echo "node: $(node --version)  npm: $(npm --version)"
+            if ! npm install -g --no-audit --no-fund --prefix "$node_dir" "hermes-web-ui@${ver}"; then
+                echo "::error:: npm install hermes-web-ui@${ver} 失败" >&2
                 exit 1
             fi
-        done
-        echo "node: $(node --version)  npm: $(npm --version)"
-
-        # 关键：用 --prefix 把 hermes-web-ui 装成全局布局到 app/node，
-        # 生成 app/node/bin/hermes-web-ui（软链）+ app/node/lib/node_modules/hermes-web-ui。
-        # 若 Node v24 无预编译，npm 会回退 node-gyp 在此处（有 gcc）编译 node-pty。
-        if ! npm install -g --no-audit --no-fund --prefix "$node_dir" "hermes-web-ui@${ver}"; then
-            echo "::error:: npm install hermes-web-ui@${ver} 失败" >&2
-            exit 1
         fi
+
+        rm -rf "$tmp"
+
+        # 创建 bin 软链（与 npm install -g 产物布局一致，install_callback 也会重建）
+        mkdir -p "$node_dir/bin"
+        ln -sf "../lib/node_modules/hermes-web-ui/bin/hermes-web-ui.mjs" "$node_dir/bin/hermes-web-ui"
 
         if [ ! -f "$bin_mjs" ]; then
             echo "::error:: bundled hermes-web-ui 入口缺失: $bin_mjs" >&2

@@ -297,7 +297,7 @@ jobs:
           **打包追踪的上游版本**（由 auto-update.yml 自动对齐）：hermes-web-ui `__WEBUI__` ｜ hermes-agent `__AGENT__`
 
           ## 本次更新（v${{ steps.target_version.outputs.target_version }}）
-          - **修复 Agent 源码未钉 release 标签（v0.6.35-2）**：build.yml 早期把 Hermes Agent 源码写死拉 `main` 分支，覆盖 build-fpk.sh 的「钉标签」逻辑，导致包内 agent 始终是 main 而非上游 release。现统一按 `config/bootstrap/hermes-agent-version.env` 的 `HERMES_AGENT_VERSION`（当前 `v2026.7.20`）下载，由 auto-update.yml 自动跟进上游最新 release；带 ref 缓存标记，env 变更自动重新下载，标签失败回退 main。
+          - **修复 Agent 源码未钉 release 标签（v0.6.35-2）**：build.yml 早期把 Hermes Agent 源码写死拉 `main` 分支，覆盖 build-fpk.sh 的「钉标签」逻辑，导致包内 agent 始终是 main 而非上游 release。现统一按 `config/bootstrap/hermes-agent-version.env` 的 `HERMES_AGENT_VERSION` 下载（由 auto-update.yml 自动跟进上游最新 release）；带 ref 缓存标记，env 变更自动重新下载，标签失败回退 main。
           - **Agent browser tools + TUI 依赖预装进 FPK（v0.6.33-25 修复 v0.6.33-24 路径 bug）**：
             - 新增 `app/hermes-agent-node/`，在 CI（Linux x64 + Node v24）把 Hermes Agent 的
               browser tools 依赖（agent-browser / @streamdown/math）与 ui-tui workspace 依赖装好，

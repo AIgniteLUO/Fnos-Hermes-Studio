@@ -1,10 +1,10 @@
 # fnOS Hermes Studio (FPK)
 
-将 [EKKOLearnAI/hermes-studio](https://github.com/EKKOLearnAI/hermes-studio) 打包为飞牛 fnOS 可安装的 **FPK** 应用，保持原版 Web UI 模样，**不使用 Docker**，采用 **npm 原生依赖 + bundled node_modules** 方式安装。
+将 [EKKOLearnAI/hermes-studio](https://github.com/EKKOLearnAI/hermes-studio) 打包为飞牛 fnOS 可安装的 **FPK** 应用，保持原版 Web UI 模样，**不使用 Docker**，采用 **官方预构建产物 + bundled node_modules（npm 兜底）** 方式安装。
 
-- 应用本体：`hermes-web-ui`（版本 `0.6.35`，由 `config/bootstrap/hermes-studio-version.env` 记录，CI 自动与 npm `dist-tags.latest` 对齐）。FPK **默认包含** bundled 运行时 `app/node/`（含编译好的原生 node-pty），由 CI 在 Node v24 + gcc/g++ 环境下构建生成；安装时 `install_callback` 直接离线复制到数据目录（几秒完成），**不再依赖 fnOS 联网编译**（fnOS 缺 gcc，此前正是安装卡死的根因）。
+- 应用本体：`hermes-web-ui`（版本记录于 `config/bootstrap/hermes-studio-version.env`，CI 自动与官方 GitHub Release（[EKKOLearnAI/hermes-studio](https://github.com/EKKOLearnAI/hermes-studio)）对齐，取其预构建产物，比 npm 更及时）。FPK **默认包含** bundled 运行时 `app/node/`（含编译好的原生 node-pty），由 CI 下载官方预构建包解包生成；安装时 `install_callback` 直接离线复制到数据目录（几秒完成），**不再依赖 fnOS 联网编译**（fnOS 缺 gcc，此前正是安装卡死的根因）。
 - 同时打包 **Hermes Agent 的 browser tools + TUI 依赖** 为 `app/hermes-agent-node/`，安装时直接复制到 Agent 目录并跳过后台 `npm install`，**首启不再长时间等待**。
-- 包版本（迭代号）：`0.6.35-2`
+- 包版本（迭代号）：记录于 `manifest`，并随每次上游更新发布到 GitHub Releases（如 `0.6.38-1`）。
 - 平台：`x86_64`（bundled 原生模块绑定 Linux x64 / Node 24 ABI）
 - 运行时依赖：`install_dep_apps=nodejs_v24`，由 fnOS 自动安装 Node.js v24
 - 默认监听端口：`8648`（绑定 `0.0.0.0`，NAS 所在局域网可直接访问）
@@ -80,8 +80,8 @@ fnos-hermes-studio/
 `.github/workflows/auto-update.yml` 会**每天自动检查上游版本**，有更新就自动发版，无需手动干预：
 
 - **跟踪对象**：
-  - `hermes-web-ui`（npm，0.6.x 线）：取 `dist-tags.latest`。
-  - `hermes-agent`（GitHub release，日期版如 `v2026.7.20`）：取最新 release 标签。
+  - `hermes-web-ui`（官方 GitHub Release：EKKOLearnAI/hermes-studio，0.6.x 线）：取最新版本标签，构建用其预构建产物 `hermes-web-ui-<ver>.tar.gz`。
+  - `hermes-agent`（GitHub release：NousResearch/hermes-agent，日期版如 `v2026.8.3`）：取最新 release 标签。
 - **动作**：任一与 `config/bootstrap/*.env` 中记录不一致时，更新 env 文件与 `manifest` 版本号，`commit` 并 `push` 到 `main` → 触发 `build.yml` 重新构建并发布新 FPK（自动发版）。
 - **版本号规则**：web-ui 主版本变化则重置 build 计数为 1，否则 build+1（如 `0.6.33-25` → web-ui 升 `0.6.35` 得 `0.6.35-1`）。
 - **手动触发**：在 GitHub Actions 页面手动运行 `Auto-update upstream versions` workflow（`workflow_dispatch`）可立即检查。
@@ -93,7 +93,7 @@ fnos-hermes-studio/
 
 格式以飞牛官方文档为准：[developer.fnnas.com/docs/cli/fnpack](https://developer.fnnas.com/docs/cli/fnpack/)。`fnpack build` 会在生成 `.fpk` 前做文件与基础格式校验（manifest 必要字段、config JSON 合法、ICON 存在、`app/ cmd/ wizard/ app/{desktop_uidir}/` 存在）。
 
-> 本地构建时 `scripts/build-fpk.sh` 会自动 `npm install -g hermes-web-ui@<HERMES_STUDIO_VERSION> --prefix app/node`（需本机有 Node v24 + gcc/g++/make/python3 以编译 node-pty）；若环境齐全则打包进 FPK 走离线安装，否则构建脚本会报错中止（避免产出缺 bundled node 的残包）。
+> 本地构建时 `scripts/build-fpk.sh` 优先从官方 GitHub Release 下载预构建的 `hermes-web-ui-<VER>.tar.gz` 解包进 `app/node/`（含已编译的 node-pty，无需本机编译）；下载失败时回退 `npm install -g hermes-web-ui@<HERMES_STUDIO_VERSION> --prefix app/node`（需本机有 Node v24 + gcc/g++ 以编译 node-pty）。两种方式皆会在打包前校验 `app/node/lib/node_modules/hermes-web-ui/bin/hermes-web-ui.mjs` 与 node-pty 编译产物，缺失则构建脚本报错中止（避免产出缺 bundled node 的残包）。
 
 ### 方式一：官方 fnpack（推荐，100% 合规）
 

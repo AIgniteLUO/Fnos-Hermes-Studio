@@ -1,8 +1,9 @@
 name: Auto-update upstream versions
 
 # 自动跟踪上游版本并触发重建：
-#   - hermes-web-ui（npm，0.6.x 线）：取 dist-tags.latest
-#   - hermes-agent（GitHub release，日期版如 v2026.7.20）：取最新 release 标签
+#   - hermes-web-ui（官方 GitHub Release：EKKOLearnAI/hermes-studio，0.6.x 线）：取最新版本标签，
+#     构建时从该 release 的预构建产物 hermes-web-ui-${ver}.tar.gz 获取（比 npm 发布更及时）。
+#   - hermes-agent（GitHub release，日期版如 v2026.8.3）：取 NousResearch/hermes-agent 最新 release 标签。
 # 任一与 config/bootstrap/*.env 中记录不一致时，更新 env 文件与 manifest 版本号，
 # commit 并 push 到 main —— 这会触发 build.yml 构建并发布新 FPK（自动发版）。
 # 版本号规则：web-ui 主版本变化则重置 build 计数为 1，否则 build+1。
@@ -29,8 +30,12 @@ jobs:
         id: detect
         run: |
           set -e
-          WEBUI_LATEST="$(curl -fsSL --max-time 30 https://registry.npmjs.org/hermes-web-ui \
-            | python3 -c 'import sys,json;print(json.load(sys.stdin)["dist-tags"]["latest"])')"
+          # hermes-web-ui：跟踪官方 GitHub Release（EKKOLearnAI/hermes-studio）。
+          # 官方在 release 上随版本即时发布预构建产物，比 npm 发布更及时；其 release 被官方
+          # 显式标记为「非 latest」，故不能取 releases/latest，需自行过滤版本标签（^v\d+\.\d+\.\d+$）。
+          WEBUI_LATEST="$(curl -fsSL --max-time 30 "https://api.github.com/repos/EKKOLearnAI/hermes-studio/releases?per_page=100" \
+            | python3 -c 'import sys,json,re; d=json.load(sys.stdin); rel=[r for r in d if re.match(r"^v\d+\.\d+\.\d+$", r["tag_name"]) and not r.get("prerelease")]; rel.sort(key=lambda r: r["published_at"], reverse=True); print(rel[0]["tag_name"].lstrip("v") if rel else "")')"
+          # hermes-agent：仍跟踪 NousResearch/hermes-agent 最新 release 标签
           AGENT_LATEST="$(curl -fsSL --max-time 30 -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             https://api.github.com/repos/NousResearch/hermes-agent/releases/latest \
             | python3 -c 'import sys,json;print(json.load(sys.stdin)["tag_name"])')"
@@ -39,8 +44,15 @@ jobs:
           echo "上游最新：hermes-web-ui=$WEBUI_LATEST  hermes-agent=$AGENT_LATEST"
 
           # 校验两端版本真实存在，避免把不存在的标签/版本写进 env 导致后续构建失败
-          if ! curl -fsSL --max-time 30 "https://registry.npmjs.org/hermes-web-ui/$WEBUI_LATEST" >/dev/null 2>&1; then
-            echo "::error:: npm 上不存在 hermes-web-ui@$WEBUI_LATEST，中止更新"
+          if [ -z "$WEBUI_LATEST" ]; then
+            echo "::error:: 未能从官方 release 解析出 hermes-web-ui 版本，中止更新"
+            exit 1
+          fi
+          # web-ui：确认官方 release 上确实存在对应的预构建产物 hermes-web-ui-${ver}.tar.gz
+          WEBUI_ASSET_OK="$(curl -fsSL --max-time 30 "https://api.github.com/repos/EKKOLearnAI/hermes-studio/releases/tags/v${WEBUI_LATEST}" \
+            | WV="$WEBUI_LATEST" python3 -c "import sys,json,os; d=json.load(sys.stdin); names=[a['name'] for a in d.get('assets',[])]; print('yes' if f'hermes-web-ui-{os.environ[\"WV\"]}.tar.gz' in names else 'no')")"
+          if [ "$WEBUI_ASSET_OK" != "yes" ]; then
+            echo "::error:: 官方 release v${WEBUI_LATEST} 缺少 hermes-web-ui-${WEBUI_LATEST}.tar.gz 预构建产物，中止更新"
             exit 1
           fi
           if ! curl -fsSL --max-time 30 -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
