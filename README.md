@@ -4,7 +4,7 @@
 
 - 应用本体：`hermes-web-ui`（版本记录于 `config/bootstrap/hermes-studio-version.env`，CI 自动与官方 GitHub Release（[EKKOLearnAI/hermes-studio](https://github.com/EKKOLearnAI/hermes-studio)）对齐，取其预构建产物，比 npm 更及时）。FPK **默认包含** bundled 运行时 `app/node/`（含编译好的原生 node-pty），由 CI 下载官方预构建包解包生成；安装时 `install_callback` 直接离线复制到数据目录（几秒完成），**不再依赖 fnOS 联网编译**（fnOS 缺 gcc，此前正是安装卡死的根因）。
 - 同时打包 **Hermes Agent 的 browser tools + TUI 依赖** 为 `app/hermes-agent-node/`，安装时直接复制到 Agent 目录并跳过后台 `npm install`，**首启不再长时间等待**。
-- 包版本（迭代号）：记录于 `manifest`，并随每次上游更新发布到 GitHub Releases（如 `0.6.38-1`）。
+- 包版本（迭代号）：记录于 `manifest`，并随每次上游更新发布到 GitHub Releases（如 `0.6.40-2`）。
 - 平台：`x86_64`（bundled 原生模块绑定 Linux x64 / Node 24 ABI）
 - 运行时依赖：`install_dep_apps=nodejs_v24`，由 fnOS 自动安装 Node.js v24
 - 默认监听端口：`8648`（绑定 `0.0.0.0`，NAS 所在局域网可直接访问）
@@ -43,7 +43,7 @@ fnos-hermes-studio/
 ├── config/
 │   ├── privilege                    # 以 package 身份运行（hermes-studio 用户）
 │   ├── resource                     # 数据共享 + /usr/local/bin 链接
-│   ├── bootstrap/hermes-studio-version.env   # 安装的 hermes-web-ui npm 版本（0.6.35，auto-update 自动对齐）
+│   ├── bootstrap/hermes-studio-version.env   # 安装的 hermes-web-ui 版本（0.6.40，跟踪官方 GitHub Release，auto-update 自动对齐）
 │   └── bootstrap/hermes-agent-version.env    # 内嵌 Hermes Agent 的 release 标签（v2026.7.20，auto-update 自动对齐）
 ├── app/
 │   ├── bin/hermes-web-ui            # 包装脚本（设置 Node/HERMES_WEB_UI_HOME 后调用官方 CLI）
