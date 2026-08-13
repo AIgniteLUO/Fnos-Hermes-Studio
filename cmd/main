@@ -379,6 +379,19 @@ start_process() {
     clean_residual_files
     sleep 1
 
+    # v0.6.42-1 时序加固（核心）：Agent 未就绪时，【先】启动 agent-ready watchdog、
+    # 【再】启动 web-ui。web-ui 的 gateway 启动时会 spawn('hermes')，若 Agent 还在后台
+    # 安装、venv/bin/hermes 尚未就位，web-ui 主进程会直接 FATAL 崩溃
+    # （"spawn hermes ENOENT"），8648 端口起不来。原逻辑只在"端口监听成功"后才启动
+    # watchdog——web-ui 一崩端口永远不会监听，watchdog 便从未被拉起，Agent 装完
+    # web-ui 也一直停在崩溃状态，应用中心显示"启用失败"，只能手动停用/启用才恢复。
+    # 这里改为：只要 Agent 未就绪就提前拉起 watchdog，即使 web-ui 首启崩溃，Agent
+    # 装好后 watchdog 会自动重启 web-ui 连上 gateway，全程无需人工干预。
+    if [ ! -x "${HERMES_AGENT_ROOT}/venv/bin/hermes" ]; then
+        log_msg "Hermes Agent not ready yet; watchdog pre-armed to auto-recover web-ui (agent may take a few minutes)"
+        start_agent_ready_watchdog
+    fi
+
     log_msg "starting hermes-web-ui on port ${PORT} ..."
     # 官方 CLI 自带 daemon，--no-open 避免 NAS 上尝试打开浏览器。
     # 使用 ${NODE_BIN} 显式执行 .mjs，避免 shebang/执行权限在某些环境不一致。
@@ -389,22 +402,18 @@ start_process() {
     for i in $(seq 1 120); do
         if is_port_listening "$PORT"; then
             log_msg "started, port ${PORT} listening"
-            if [ "${agent_ready}" != "1" ]; then
-                start_agent_ready_watchdog
-            fi
+            # Agent 就绪即首启监听；未就绪则由上方预置的 watchdog 兜底接管，
+            # 这里不再重复触发。
             return 0
         fi
         # 兜底：通过 server.log 判断 bootstrap 是否已就绪
         if grep -qE "listening on 0\.0\.0\.0:${PORT}|app\.listen called" "${WEB_UI_HOME}/server.log" 2>/dev/null; then
             log_msg "started, server log reports listening on port ${PORT}"
-            if [ "${agent_ready}" != "1" ]; then
-                start_agent_ready_watchdog
-            fi
             return 0
         fi
         sleep 0.5
     done
-    log_msg "ERROR: port ${PORT} still not listening after 60s, see ${LOG_FILE}"
+    log_msg "ERROR: port ${PORT} still not listening after 60s, see ${LOG_FILE} (web-ui may have crashed on missing agent; watchdog is armed to auto-restart once agent is ready)"
     return 1
 }
 

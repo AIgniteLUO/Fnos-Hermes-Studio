@@ -27,6 +27,63 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
+# ── 本地代理 ──
+# GitHub 资源下载慢时，自动使用当前系统已配置的代理：
+#   1. 环境变量优先（https_proxy / http_proxy / all_proxy，含大写变体）；
+#   2. 其次读取 macOS 系统代理（scutil --proxy）。
+# 探测到后导出给后续所有 curl / npm 使用；未探测到则保持原有的直连行为。
+detect_proxy() {
+    local p v esc
+    for v in https_proxy HTTPS_PROXY http_proxy HTTP_PROXY all_proxy ALL_PROXY; do
+        p="${!v}"
+        [ -n "$p" ] || continue
+        # 代理地址必须是纯 ASCII：混入的 ANSI 控制序列 / 无效 UTF-8 字节
+        # 会导致 curl 连接失败且终端输出乱码。三步净化：
+        # ① 删除 ANSI 转义序列（ESC[..m 等颜色码）与裸 ESC 字节；
+        # ② 只保留 ASCII 可打印字符（0x20-0x7E）；
+        # ③ 去掉首尾空白。
+        esc="$(printf '\033')"
+        p="$(printf '%s' "$p" | LC_ALL=C sed -E "s/${esc}\[[0-9;]*[A-Za-z]//g; s/${esc}//g")"
+        p="$(printf '%s' "$p" | LC_ALL=C tr -cd '[:print:]')"
+        p="$(printf '%s' "$p" | LC_ALL=C sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+        if [ -n "$p" ]; then
+            PROXY_SOURCE="env:$v"
+            echo "$p"
+            return 0
+        fi
+    done
+
+    if command -v scutil >/dev/null 2>&1; then
+        local info host port enabled
+        info="$(scutil --proxy 2>/dev/null)"
+        host="$(printf '%s\n' "$info" | awk '/HTTPSProxy/{print $3}')"
+        port="$(printf '%s\n' "$info" | awk '/HTTPSPort/{print $3}')"
+        enabled="$(printf '%s\n' "$info" | awk '/HTTPSEnable/{print $3}')"
+        if [ -z "$host" ] || [ "${enabled:-0}" != "1" ]; then
+            # HTTPS 系统代理未启用时，回退读取 HTTP 系统代理
+            host="$(printf '%s\n' "$info" | awk '/HTTPProxy/{print $3}')"
+            port="$(printf '%s\n' "$info" | awk '/HTTPPort/{print $3}')"
+            enabled="$(printf '%s\n' "$info" | awk '/HTTPEnable/{print $3}')"
+        fi
+        if [ -n "$host" ] && [ "${enabled:-0}" = "1" ] && [ "$host" != "0.0.0.0" ]; then
+            PROXY_SOURCE="system"
+            echo "http://${host}:${port:-80}"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+if PROXY="$(detect_proxy)"; then
+    # 用 [] 包裹代理值，便于肉眼核对实际生效的代理地址
+    printf '检测到本地代理: [%s]（来源: %s）\n' "$PROXY" "$PROXY_SOURCE"
+    export https_proxy="$PROXY" http_proxy="$PROXY" all_proxy="$PROXY"
+    export HTTPS_PROXY="$PROXY" HTTP_PROXY="$PROXY" ALL_PROXY="$PROXY"
+else
+    echo "未检测到本地代理，本次下载保持直连"
+fi
+
 # ── 准备 Hermes Agent 离线源码包（可选但强烈建议） ──
 # 很多 NAS 无法稳定连接 GitHub，安装时 git clone 会失败，导致应用启动不了。
 # 构建时把源码包嵌入 FPK，install_callback 会优先用它而跳过网络 clone。
@@ -72,11 +129,16 @@ ensure_hermes_agent_src() {
     local downloaded=false
     while [ $attempt -le 3 ]; do
         echo "  尝试 $attempt/3 下载 $url ..."
-        if curl -fsSL --max-time 300 "$url" -o "$tmp_tar" 2>/dev/null; then
+        # --connect-timeout：连接挂死（代理异常等）时快速失败，不再无声等满 300 秒；
+        # 不吞 stderr：curl 错误信息直接可见，方便定位；
+        # -w 打印耗时/大小，下载时有明确反馈。
+        if curl -fSL --connect-timeout 30 --max-time 300 \
+                -w '  ✔ 下载完成: %{size_download} bytes / %{time_total}s\n' \
+                "$url" -o "$tmp_tar"; then
             downloaded=true
             break
         fi
-        echo "  下载失败，重试..."
+        echo "  ✗ 下载失败（第 $attempt 次）"
         attempt=$((attempt + 1))
         sleep 5
     done
@@ -88,11 +150,14 @@ ensure_hermes_agent_src() {
         url="https://api.github.com/repos/NousResearch/hermes-agent/tarball/main"
         attempt=1
         while [ $attempt -le 3 ]; do
-            if curl -fsSL --max-time 300 "$url" -o "$tmp_tar" 2>/dev/null; then
+            if curl -fSL --connect-timeout 30 --max-time 300 \
+                    -w '  ✔ 下载完成: %{size_download} bytes / %{time_total}s\n' \
+                    "$url" -o "$tmp_tar"; then
                 downloaded=true
                 agent_ver="main"
                 break
             fi
+            echo "  ✗ 下载失败（第 $attempt 次）"
             attempt=$((attempt + 1))
             sleep 5
         done
@@ -176,7 +241,8 @@ ensure_node_bundle() {
         local tmp
         tmp="$(mktemp -d)"
         local ok=0
-        if curl -fSL --max-time 300 -o "$tmp/$asset" "$url" 2>/dev/null; then
+        # 同样加连接超时 + 不吞 stderr，下载异常时能立刻看到原因
+        if curl -fSL --connect-timeout 30 --max-time 300 -o "$tmp/$asset" "$url"; then
             echo "已下载官方预构建产物: $url"
             mkdir -p "$pkg_dir"
             tar -xzf "$tmp/$asset" -C "$tmp"
@@ -300,11 +366,20 @@ ensure_hermes_agent_node_bundle() {
     # 按「相对 agent 源码根」的路径镜像进 hermes-agent-node/<rel>/node_modules。
     # install_callback 端 find hermes-agent-node -name node_modules 后套用相同相对结构
     # 复制回 Agent 目录，因此这里 rel 必须是干净的相对路径（绝不可含构建机绝对路径）。
+    # 注：用临时文件而非进程替换 <( … )，保证 POSIX sh（macOS /bin/sh）兼容。
     local count=0
+    local pkg_list="$work/.pkgroots.txt"
+    find "$work" -name package.json -not -path '*/node_modules/*' -exec dirname {} \; > "$pkg_list" 2>/dev/null || true
     while IFS= read -r pkgroot; do
         [ -d "$pkgroot/node_modules" ] || continue
+        # 计算相对路径。macOS 自带 realpath 不支持 GNU 的 --relative-to，
+        # 改用 cd + pwd -L 从 work 进入 pkgroot 后取相对路径，纯 POSIX。
         local rel
-        rel="$(realpath --relative-to="$work" "$pkgroot")"
+        if [ "$pkgroot" = "$work" ]; then
+            rel=""   # 根目录 node_modules 平铺到 bundle 根
+        else
+            rel="$(cd "$work" && cd "$pkgroot" && pwd -L | sed "s@^$work/@@")"
+        fi
         # 防御：若相对路径异常（绝对路径或意外混入构建机路径），跳过以免污染包
         case "$rel" in
             /*|*runner*|*.agent-node-work*)
@@ -315,7 +390,8 @@ ensure_hermes_agent_node_bundle() {
         mkdir -p "$node_bundle/$rel"
         cp -a "$pkgroot/node_modules" "$node_bundle/$rel/"
         count=$((count + 1))
-    done < <(find "$work" -name package.json -not -path '*/node_modules/*' -exec dirname {} \;)
+    done < "$pkg_list"
+    rm -f "$pkg_list"
 
     rm -rf "$work"
 
@@ -362,7 +438,42 @@ normalize_app_permissions() {
     echo "app/ 权限规范化完成"
 }
 
+# ── 归一化外层脚本行尾 CRLF -> LF ──
+# 根因：cmd/、wizard/、config/ 下的 shell 脚本在 git 历史里长期以 CRLF 行尾存储
+# （Windows 编辑器 / git autocrlf 遗留）。fnOS 解压后 bash 解析 `_resolve_trim_paths() {`
+# 这类行时，`{` 后紧跟 `\r` 会报 "syntax error near unexpected token `{'"，
+# 整个 cmd/main 直接跑不起来 → 应用启用失败。postprocess_fpk 只清洗内层 app.tgz，
+# 外层这些脚本从没被处理，所以病一直带到 NAS。这里在打包前就地转成 LF，治本。
+normalize_text_line_endings() {
+    echo "归一化外层脚本行尾 CRLF -> LF ..."
+    local f
+    local txt_list
+    txt_list="$(mktemp)"
+    find cmd wizard config -type f 2>/dev/null > "$txt_list"
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        # 只对纯文本脚本处理；二进制（.node/.so/PNG 等）跳过，避免破坏
+        case "$f" in
+            *.node|*.so|*.so.*|*.png|*.PNG|*.jpg|*.jpeg|*.ico|*.icns|*.woff*|*.ttf|*.otf)
+                continue ;;
+        esac
+        # 含 \r 才转，避免全量重写无谓改动
+        if grep -q $'\r' "$f" 2>/dev/null; then
+            # 用 tr 去 \r，跨平台兼容（macOS sed -i 与 GNU 语法不同，故走 tr）
+            local tmp_file
+            tmp_file="$(mktemp)"
+            if tr -d '\r' < "$f" > "$tmp_file" 2>/dev/null; then
+                cat "$tmp_file" > "$f"
+            fi
+            rm -f "$tmp_file"
+        fi
+    done < "$txt_list"
+    rm -f "$txt_list"
+    echo "外层脚本行尾归一化完成"
+}
+
 normalize_app_permissions
+normalize_text_line_endings
 
 # ── FPK 后处理：移除软链、统一属主为 root、正规化权限 ──
 # 根因：CI runner 以 uid=1001 构建，npm install -g 会生成 bin/ 软链；fnpack 把这些
