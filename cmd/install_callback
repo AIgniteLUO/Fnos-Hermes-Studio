@@ -302,6 +302,48 @@ ACTUAL_VER=$("${NODE_BIN}" "${HERMES_BIN}" --version 2>/dev/null | grep -oE '[0-
 log_msg "hermes-web-ui installed version: ${ACTUAL_VER}"
 
 # ---------------------------------------------------------------------------
+# 4b. 兜底：patch hermes-web-ui 安全头，允许被 fnOS 桌面 iframe 嵌入
+# ---------------------------------------------------------------------------
+# 正常情况下 build-fpk.sh 已在构建时对 bundled node 打过此补丁，install_callback
+# 的方式 A 会原样复制进数据目录。但方式 B（npm install 回退）装出来的是未 patch 的
+# 官方包，这里再补一次，保证两种安装路径下 fnOS 桌面都能窗口内嵌入显示。
+# 幂等：已是目标值则不重复写入。
+patch_frame_headers_runtime() {
+    local server_js="${NODE_PREFIX}/lib/node_modules/hermes-web-ui/dist/server/index.js"
+    [ -f "$server_js" ] || { log_msg "WARNING: frame-header patch skipped (server.js not found)"; return 0; }
+    # 幂等判定：已无 X-Frame-Options 且已无 frame-ancestors 指令即视为已 patch
+    if ! grep -q 'I.set("X-Frame-Options"' "$server_js" 2>/dev/null \
+       && ! grep -q "frame-ancestors" "$server_js" 2>/dev/null; then
+        log_msg "frame headers already patched (no X-Frame-Options / no frame-ancestors), skip"
+        return 0
+    fi
+    "${NODE_BIN}" - "$server_js" <<'JS'
+const fs = require("fs");
+const p = process.argv[2];
+let s = fs.readFileSync(p, "utf8");
+let changed = false;
+// 彻底移除 X-Frame-Options 响应头（http + 非 localhost 下 SAMEORIGIN 仍会拒绝嵌入）
+const xfoPat = /,I\.set\("X-Frame-Options","[^"]*"\)/g;
+const xfoPat2 = /I\.set\("X-Frame-Options","[^"]*"\),?/g;
+if (/I\.set\("X-Frame-Options"/.test(s)) {
+    s = s.replace(xfoPat, "").replace(xfoPat2, "");
+    changed = true;
+}
+// 删除 frame-ancestors 指令（无论取值 none/self）
+const faPat = /,"frame-ancestors '[^']*'"/g;
+const faPat2 = /"frame-ancestors '[^']*'",/g;
+const faPat3 = /"frame-ancestors '[^']*'"/g;
+if (/frame-ancestors /.test(s)) {
+    s = s.replace(faPat, "").replace(faPat2, "").replace(faPat3, "");
+    changed = true;
+}
+if (changed) { fs.writeFileSync(p, s); console.log("frame headers patched at runtime"); }
+JS
+    log_msg "frame headers runtime patch applied"
+}
+patch_frame_headers_runtime
+
+# ---------------------------------------------------------------------------
 # 5. 安装 / 升级 Hermes Agent 后端（hermes-web-ui 启动时依赖 `hermes` 命令）
 # ---------------------------------------------------------------------------
 BUNDLED_AGENT_SRC="${APP_DIR}/hermes-agent-src"

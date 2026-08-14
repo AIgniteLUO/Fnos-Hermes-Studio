@@ -23,7 +23,7 @@
    - **v0.6.33-22 起：修复"设置目录权限失败"安装报错（初步）**——打包前规范化 `app/` 权限/属主，install_callback 移除 `set -e` 并把 `chmod/chown` 全部改为最佳 effort。
    - 修复目录权限。
 3. `cmd/main start`：调用 `hermes-web-ui start --port 8648`，由官方 CLI 自带的 daemon 机制后台运行，默认绑定 `0.0.0.0`。
-4. 桌面图标通过 `app/ui/config` 的 `.url` 入口直接打开 `http://<NAS>:8648/`，即原版 Hermes Studio Web UI。
+4. 桌面图标通过 `app/ui/config` 的 `.url` 入口以 **iframe** 方式在 fnOS 桌面窗口内打开 `http://<NAS>:8648/`（即原版 Hermes Studio Web UI）。为支持内嵌，构建时与安装时会对 `hermes-web-ui` 服务端安全头做补丁：`X-Frame-Options` 由 `DENY` 放宽为 `SAMEORIGIN`，CSP `frame-ancestors` 由 `'none'` 放宽为 `'self'`，允许同源 NAS 域名下嵌入显示。
 5. 首次登录：默认账号 `admin` / 密码 `123456`，随后在「设置」中配置模型 API Key。
 
 所有用户数据（数据库、凭证、日志、上传、Node 运行时）保存在 `TRIM_PKGHOME/data`（即 `@apphome/hermes-studio/data`），升级时保留。

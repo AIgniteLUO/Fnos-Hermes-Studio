@@ -308,6 +308,66 @@ ensure_node_bundle() {
 
 ensure_node_bundle
 
+# ── Patch hermes-web-ui 服务端安全头，允许被 fnOS 桌面 iframe 嵌入 ──
+# 背景：hermes-web-ui 的安全中间件 siI() 会给所有响应设置
+#   X-Frame-Options: DENY
+#   Content-Security-Policy: ... frame-ancestors 'none' ...
+# 这会让 fnOS 桌面入口（app/ui/config type=iframe）无法把应用内嵌进系统窗口，
+# 浏览器只允许它在新标签页打开。fnOS 桌面 iframe 是同源 NAS 域名下的嵌入，
+# 这里放宽到允许同源嵌入，使应用能在 fnOS 桌面窗口内显示。
+# 用 node 做精确字符串替换（dist/server/index.js 是 minified 单行大文件，
+# sed/awk 行处理易踩坑；node 读全文替换最稳妥）。每次上游升级 web-ui 都会
+# 重新下载 bundled node，此函数会自动重新打补丁，幂等且不依赖上游版本。
+patch_web_ui_frame_headers() {
+    local pkg_dir="$ROOT/app/node/lib/node_modules/hermes-web-ui"
+    local server_js="$pkg_dir/dist/server/index.js"
+    if [ ! -f "$server_js" ]; then
+        echo "::warning:: 未找到 $server_js，跳过 frame 头 patch" >&2
+        return 0
+    fi
+
+    node - "$server_js" <<'JS'
+const fs = require('fs');
+// node - <arg> <stdin> 形式下 argv = [node, "-", <arg>]，故取 argv[2]
+const p = process.argv[2];
+let s = fs.readFileSync(p, 'utf8');
+let changed = false;
+
+// 1) 彻底移除 X-Frame-Options 响应头设置
+// 原因：fnOS 桌面宿主页与 http://<NAS>:8648/ 虽是同域 IP，但浏览器对
+// http + 非 localhost 的 origin 视为 untrustworthy，X-Frame-Options:SAMEORIGIN
+// 仍会拒绝在 frame 中显示（"Refused to display ... set X-Frame-Options to
+// sameorigin"）。即使删了 CSP frame-ancestors，X-Frame-Options:SAMEORIGIN
+// 这道遗留防线照样拦截。故必须把 X-Frame-Options 整条移除。
+// 匹配 I.set("X-Frame-Options","<任意值>") 并删掉（含前导逗号）。
+const xfoPat = /,I\.set\("X-Frame-Options","[^"]*"\)/g;
+const xfoPat2 = /I\.set\("X-Frame-Options","[^"]*"\),?/g;
+if (/I\.set\("X-Frame-Options"/.test(s)) {
+    s = s.replace(xfoPat, '').replace(xfoPat2, '');
+    changed = true;
+}
+
+// 2) 删除 CSP frame-ancestors 指令（无论取值 none/self），彻底放行 iframe 嵌入
+// 用正则匹配任意取值（none/self/未来可能的其他值），并清理删除后的多余逗号。
+const faPat1 = /,"frame-ancestors '[^']*'"/g;
+const faPat2 = /"frame-ancestors '[^']*'",/g;
+const faPat3 = /"frame-ancestors '[^']*'"/g;
+if (/frame-ancestors /.test(s)) {
+    s = s.replace(faPat1, "").replace(faPat2, "").replace(faPat3, "");
+    changed = true;
+}
+
+if (changed) {
+    fs.writeFileSync(p, s);
+    console.log('✅ web-ui frame headers patched: X-Frame-Options removed, frame-ancestors removed');
+} else {
+    console.log('::warning:: web-ui frame headers 未匹配到补丁点（上游可能已改），请人工核查 dist/server/index.js');
+}
+JS
+}
+
+patch_web_ui_frame_headers
+
 # ── 准备 agent 的 bundled node_modules（browser tools + TUI 依赖）──
 # 根因：官方 installer 在首启后台跑 `npm install`（root 依赖 agent-browser /
 # @streamdown/math = browser tools + ui-tui workspace），默认 NODE_DEPS_TIMEOUT=600s，

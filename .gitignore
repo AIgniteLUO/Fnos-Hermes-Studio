@@ -35,3 +35,6 @@ node_modules/
 .DS_Store
 Thumbs.db
 *.log
+
+# ── Claude Code 项目技能（软链接指向全局 skills 目录，不入库）──
+.claude/
