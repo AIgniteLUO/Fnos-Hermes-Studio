@@ -3,8 +3,8 @@
         "hermes-studio.Application": {
             "title": "Hermes Studio",
             "icon": "images/icon_{0}.png",
-            "type": "url",
-            "protocol": "",
+            "type": "iframe",
+            "protocol": "http",
             "port": "8648",
             "url": "/",
             "allUsers": false
