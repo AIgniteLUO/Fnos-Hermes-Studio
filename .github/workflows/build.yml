@@ -278,15 +278,8 @@ jobs:
       # 已存在同名稳定版则跳过，保证幂等、不重复建版。
       - name: Publish stable release (if new version)
         if: success()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          TAG="v${{ steps.target_version.outputs.target_version }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "稳定版 $TAG 已存在，跳过"
-            exit 0
-          fi
           ASSET="dist/fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk"
           [ -f "$ASSET" ] || { echo "::error:: 找不到 $ASSET"; exit 1; }
           HERMES_WEBUI_VER="$(grep '^HERMES_STUDIO_VERSION=' config/bootstrap/hermes-studio-version.env | cut -d= -f2)"
@@ -297,38 +290,13 @@ jobs:
           **打包追踪的上游版本**（由 auto-update.yml 自动对齐）：hermes-web-ui `__WEBUI__` ｜ hermes-agent `__AGENT__`
 
           ## 本次更新（v${{ steps.target_version.outputs.target_version }}）
-          - **修复 Agent 源码未钉 release 标签（v0.6.35-2）**：build.yml 早期把 Hermes Agent 源码写死拉 `main` 分支，覆盖 build-fpk.sh 的「钉标签」逻辑，导致包内 agent 始终是 main 而非上游 release。现统一按 `config/bootstrap/hermes-agent-version.env` 的 `HERMES_AGENT_VERSION` 下载（由 auto-update.yml 自动跟进上游最新 release）；带 ref 缓存标记，env 变更自动重新下载，标签失败回退 main。
-          - **Agent browser tools + TUI 依赖预装进 FPK（v0.6.33-25 修复 v0.6.33-24 路径 bug）**：
-            - 新增 `app/hermes-agent-node/`，在 CI（Linux x64 + Node v24）把 Hermes Agent 的
-              browser tools 依赖（agent-browser / @streamdown/math）与 ui-tui workspace 依赖装好，
-              按相对路径镜像进包。
-            - **v0.6.33-24 复盘**：该版虽打进了 hermes-agent-node，但打包脚本把构建机绝对路径
-              （`/home/runner/work/.../.agent-node-work`）一并带进包内，导致
-              `hermes-agent-node/node_modules` 根目录不存在，install_callback 静默回退到 npm install，
-              等于没生效。**v0.6.33-25 已修复**：改用尾斜杠复制 + `realpath --relative-to` 计算相对
-              路径，并增加构建机路径防御性拦截；CI 校验也改为硬性失败，杜绝此类坏包再发出。
-            - 安装时 install_callback 检测到 bundled 的 `hermes-agent-node` 后直接复制到 Agent 目录，
-              并把官方 installer 的 `NODE_DEPS_TIMEOUT` 压到 1s，**跳过后台 npm install**
-              （官方默认 600s，慢网会卡很久），首启大幅提速。
-            - FPK 后处理保留 `node_modules/` 内的有效软链（npm workspace / .bin 链接），
-              以保证 Agent 的 `@hermes/shared` / `@hermes/ink` 等依赖可解析；仅剥离
-              `app/node/bin` 下自引用/损坏的 bin 软链（由 install_callback 自行重建）。
-          - **修复"设置目录权限失败"安装报错（v0.6.33-23 彻底修复）**：
-            - 通过 FPK 后处理脚本移除 app.tgz 内所有 npm 生成的软链（这些软链在打包后变成自引用/损坏，fnOS 解压时 `chmod/chown -R` 直接失败）。
-            - 重置 app.tgz 所有条目 uid/gid 为 root，统一权限为 755/644，彻底避免 CI runner 属主被带入包。
-            - install_callback 改为直接检测 `app/node/lib/node_modules/hermes-web-ui/bin/hermes-web-ui.mjs` 判断 bundled node 是否存在，并在安装时自行重建 bin/ 软链。
-          - **修复"安装卡在 55%"根因**：FPK 现在在 CI（Linux x64 + Node v24 + gcc/g++）把
-            hermes-web-ui 的 node_modules（含编译好的原生 node-pty）作为 `app/node` 打进包。
-            安装时 install_callback 走 Path A 离线复制（几秒完成），**不再**回退 npm install
-            —— fnOS 缺 gcc/g++ 编不出 node-pty 原生模块，此前正是这个原因导致安装阻塞/超时。
-          - 安装前自动环境检查：检测 Node.js、检查 8648 端口占用、杀掉占用进程及所有 Hermes
-            残留进程、清理 IPC socket / PID 文件、修复数据目录属主，避免旧版本残留导致
-            EACCES / EADDRINUSE 安装/启动失败。
-          - 增强 Hermes Agent 后台安装鲁棒性：安装失败时记录 `failed` marker 并在启动时自动重试。
-          - 离线安装 Hermes Agent：FPK 内嵌 hermes-agent 源码包，安装时跳过 GitHub git clone。
-          - 微信 DM 策略默认白名单，安装向导可一键开放给所有用户。
+          - 跟随官方 GitHub Release 预构建产物（EKKOLearnAI/hermes-studio）自动对齐 hermes-web-ui 版本，比 npm 发布更及时。
+          - 内置 Hermes Agent 离线源码包（按 NousResearch/hermes-agent 最新 release 标签钉版本），安装时跳过 GitHub git clone，适合 NAS 弱网环境。
+          - Agent browser tools + TUI 依赖预装进 FPK，首启跳过后台 npm install，启动更快。
+          - bundled node 运行时不入库，CI 用 Node v24 编译含原生 node-pty，安装走离线复制，避免 fnOS 缺 gcc 导致安装卡死。
+          - 安装前自动环境检查：Node.js、8648 端口占用、清理残留进程 / IPC socket / PID 文件、修复数据目录属主。
 
-          > ⚠️ 若从旧版本升级仍异常，建议先在飞牛终端手动 `pkill -9 -f hermes` 并卸载旧版后再重装。
+          > ⚠️ 若从旧版本升级仍异常，建议先 pkill -9 -f hermes 并卸载旧版后再重装。
 
           ## 安装说明
           1. 飞牛应用中心 -> 手动安装 -> 选择本 fpk。
@@ -339,11 +307,18 @@ jobs:
           最新滚动版见 Release latest。
           NOTE
           sed -i "s/__WEBUI__/${HERMES_WEBUI_VER}/; s/__AGENT__/${HERMES_AGENT_VER}/" /tmp/relnotes.md
-          gh release create "$TAG" \
-            --title "Hermes Studio v${{ steps.target_version.outputs.target_version }}" \
-            --notes-file /tmp/relnotes.md \
-            "$ASSET"
-          echo "已发布稳定版 $TAG"
+          echo "稳定版发布说明已生成：/tmp/relnotes.md"
+
+      - name: Publish stable release (upload)
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.target_version.outputs.target_version }}
+          name: "Hermes Studio v${{ steps.target_version.outputs.target_version }}"
+          prerelease: false
+          overwrite: true
+          files: dist/fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk
+          body_path: /tmp/relnotes.md
 
       - name: Build Summary
         run: |

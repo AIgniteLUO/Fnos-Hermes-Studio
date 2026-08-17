@@ -405,7 +405,11 @@ ensure_hermes_agent_node_bundle() {
     # /home/runner/work/.../.agent-node-work）带进 hermes-agent-node/，
     # 导致 install_callback 找不到 hermes-agent-node/node_modules 而回退 npm install。
     work="$(mktemp -d)"
-    cp -a "$src_dir/." "$work/"
+    # 排除 .git：hermes-agent-src 内的 .git 由 build.yml 的 git init 生成，
+    # 其松散对象（objects/xx）在 git 自动 gc 打包后会被清除，cp -a 会 stat 失败
+    # 导致整个打包中断（偶发，取决于 gc 时机）。node bundle 只需源码文件，不需要 .git。
+    # 用 tar 管道复制并排除 .git，既绕开 cp 的 stat 竞态，也不把 .git 带进 hermes-agent-node。
+    tar -C "$src_dir" --exclude='.git' -cf - . | tar -xf - -C "$work"
 
     (
         cd "$work"
