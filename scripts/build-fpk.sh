@@ -224,63 +224,77 @@ ensure_node_bundle() {
     local node_dir="$ROOT/app/node"
     local pkg_dir="$node_dir/lib/node_modules/hermes-web-ui"
     local bin_mjs="$pkg_dir/bin/hermes-web-ui.mjs"
+    local ref_marker="$node_dir/.bundled-node-ver"
 
-    # 已存在则复用（本地增量构建 / 缓存）
+    # 缓存有效性校验：检查入口文件、package.json 以及版本是否与目标 $ver 一致
     if [ -f "$bin_mjs" ] && [ -f "$pkg_dir/package.json" ]; then
-        echo "使用已缓存的 bundled node: $node_dir (hermes-web-ui@$ver)"
-    else
-        echo "准备 bundled node（获取 hermes-web-ui@$ver）..."
-        rm -rf "$node_dir"
-        mkdir -p "$node_dir"
-
-        # 官方在 GitHub Release 上随版本即时发布预构建好的 web-ui 包
-        # （含 bin/dist/node_modules，node-pty 原生模块已编译），比 npm 发布更及时，
-        # 且与上游 release 严格对齐。优先用官方产物；下载失败再回退 npm 编译。
-        local asset="hermes-web-ui-${ver}.tar.gz"
-        local url="https://github.com/EKKOLearnAI/hermes-studio/releases/download/v${ver}/${asset}"
-        local tmp
-        tmp="$(mktemp -d)"
-        local ok=0
-        # 同样加连接超时 + 不吞 stderr，下载异常时能立刻看到原因
-        if curl -fSL --connect-timeout 30 --max-time 300 -o "$tmp/$asset" "$url"; then
-            echo "已下载官方预构建产物: $url"
-            mkdir -p "$pkg_dir"
-            tar -xzf "$tmp/$asset" -C "$tmp"
-            if [ -d "$tmp/webui" ]; then
-                cp -a "$tmp/webui/." "$pkg_dir/"
-                ok=1
-            else
-                echo "::warning:: 官方产物结构异常（缺少顶层 webui/），回退 npm install"
-            fi
-        else
-            echo "::warning:: 下载官方产物失败（$url），回退 npm install -g hermes-web-ui@$ver"
+        local cur_pkg_ver=""
+        if [ -f "$ref_marker" ]; then
+            cur_pkg_ver="$(cat "$ref_marker" 2>/dev/null | tr -d ' ')"
+        fi
+        if [ -z "$cur_pkg_ver" ] && [ -f "$pkg_dir/package.json" ]; then
+            cur_pkg_ver="$(node -e "try{console.log(require('$pkg_dir/package.json').version)}catch(e){}" 2>/dev/null || grep -m1 '"version":' "$pkg_dir/package.json" | sed -E 's/.*"version":[[:space:]]*"([^"]+)".*/\1/')"
         fi
 
-        if [ "$ok" != "1" ]; then
-            # 回退路径：npm install（需 gcc/g++ 编译 node-pty）
-            for t in gcc g++ make python3 node npm; do
-                if ! command -v "$t" >/dev/null 2>&1; then
-                    echo "::error:: 回退 npm 编译缺少必需工具: $t" >&2
-                    exit 1
-                fi
-            done
-            echo "node: $(node --version)  npm: $(npm --version)"
-            if ! npm install -g --no-audit --no-fund --prefix "$node_dir" "hermes-web-ui@${ver}"; then
-                echo "::error:: npm install hermes-web-ui@${ver} 失败" >&2
+        if [ "$cur_pkg_ver" = "$ver" ]; then
+            echo "使用已缓存的 bundled node: $node_dir (hermes-web-ui@$ver)"
+            return 0
+        fi
+        echo "缓存 bundled node 版本 ($cur_pkg_ver) 与当前目标版本 $ver 不一致，重新准备..."
+        rm -rf "$node_dir"
+    fi
+
+    echo "准备 bundled node（获取 hermes-web-ui@$ver）..."
+    rm -rf "$node_dir"
+    mkdir -p "$node_dir"
+
+    # 官方在 GitHub Release 上随版本即时发布预构建好的 web-ui 包
+    # （含 bin/dist/node_modules，node-pty 原生模块已编译），比 npm 发布更及时，
+    # 且与上游 release 严格对齐。优先用官方产物；下载失败再回退 npm 编译。
+    local asset="hermes-web-ui-${ver}.tar.gz"
+    local url="https://github.com/EKKOLearnAI/hermes-studio/releases/download/v${ver}/${asset}"
+    local tmp
+    tmp="$(mktemp -d)"
+    local ok=0
+    # 同样加连接超时 + 不吞 stderr，下载异常时能立刻看到原因
+    if curl -fSL --connect-timeout 30 --max-time 300 -o "$tmp/$asset" "$url"; then
+        echo "已下载官方预构建产物: $url"
+        mkdir -p "$pkg_dir"
+        tar -xzf "$tmp/$asset" -C "$tmp"
+        if [ -d "$tmp/webui" ]; then
+            cp -a "$tmp/webui/." "$pkg_dir/"
+            ok=1
+        else
+            echo "::warning:: 官方产物结构异常（缺少顶层 webui/），回退 npm install"
+        fi
+    else
+        echo "::warning:: 下载官方产物失败（$url），回退 npm install -g hermes-web-ui@$ver"
+    fi
+
+    if [ "$ok" != "1" ]; then
+        # 回退路径：npm install（需 gcc/g++ 编译 node-pty）
+        for t in gcc g++ make python3 node npm; do
+            if ! command -v "$t" >/dev/null 2>&1; then
+                echo "::error:: 回退 npm 编译缺少必需工具: $t" >&2
                 exit 1
             fi
-        fi
-
-        rm -rf "$tmp"
-
-        # 创建 bin 软链（与 npm install -g 产物布局一致，install_callback 也会重建）
-        mkdir -p "$node_dir/bin"
-        ln -sf "../lib/node_modules/hermes-web-ui/bin/hermes-web-ui.mjs" "$node_dir/bin/hermes-web-ui"
-
-        if [ ! -f "$bin_mjs" ]; then
-            echo "::error:: bundled hermes-web-ui 入口缺失: $bin_mjs" >&2
+        done
+        echo "node: $(node --version)  npm: $(npm --version)"
+        if ! npm install -g --no-audit --no-fund --prefix "$node_dir" "hermes-web-ui@${ver}"; then
+            echo "::error:: npm install hermes-web-ui@${ver} 失败" >&2
             exit 1
         fi
+    fi
+
+    rm -rf "$tmp"
+
+    # 创建 bin 软链（与 npm install -g 产物布局一致，install_callback 也会重建）
+    mkdir -p "$node_dir/bin"
+    ln -sf "../lib/node_modules/hermes-web-ui/bin/hermes-web-ui.mjs" "$node_dir/bin/hermes-web-ui"
+
+    if [ ! -f "$bin_mjs" ]; then
+        echo "::error:: bundled hermes-web-ui 入口缺失: $bin_mjs" >&2
+        exit 1
     fi
 
     # 校验 node-pty 原生模块确实编译出来了（不是只下了 prebuilds/）
@@ -303,7 +317,8 @@ ensure_node_bundle() {
         exit 1
     fi
 
-    echo "bundled node 准备完成: $node_dir"
+    echo "$ver" > "$ref_marker"
+    echo "bundled node 准备完成: $node_dir (hermes-web-ui@$ver)"
 }
 
 ensure_node_bundle
@@ -339,10 +354,10 @@ let changed = false;
 // 仍会拒绝在 frame 中显示（"Refused to display ... set X-Frame-Options to
 // sameorigin"）。即使删了 CSP frame-ancestors，X-Frame-Options:SAMEORIGIN
 // 这道遗留防线照样拦截。故必须把 X-Frame-Options 整条移除。
-// 匹配 I.set("X-Frame-Options","<任意值>") 并删掉（含前导逗号）。
-const xfoPat = /,I\.set\("X-Frame-Options","[^"]*"\)/g;
-const xfoPat2 = /I\.set\("X-Frame-Options","[^"]*"\),?/g;
-if (/I\.set\("X-Frame-Options"/.test(s)) {
+// 匹配任意变量名 .set("X-Frame-Options","<任意值>") 并删掉（含前导逗号）。
+const xfoPat = /,?[a-zA-Z0-9_$]+\.set\("X-Frame-Options",\s*"[^"]*"\)/g;
+const xfoPat2 = /[a-zA-Z0-9_$]+\.set\("X-Frame-Options",\s*"[^"]*"\),?/g;
+if (/X-Frame-Options/.test(s)) {
     s = s.replace(xfoPat, '').replace(xfoPat2, '');
     changed = true;
 }
@@ -360,6 +375,8 @@ if (/frame-ancestors /.test(s)) {
 if (changed) {
     fs.writeFileSync(p, s);
     console.log('✅ web-ui frame headers patched: X-Frame-Options removed, frame-ancestors removed');
+} else if (!/X-Frame-Options/.test(s) && !/frame-ancestors/.test(s)) {
+    console.log('ℹ️ web-ui frame headers 已处于 patched 状态');
 } else {
     console.log('::warning:: web-ui frame headers 未匹配到补丁点（上游可能已改），请人工核查 dist/server/index.js');
 }
@@ -378,6 +395,13 @@ ensure_hermes_agent_node_bundle() {
     local src_dir="$ROOT/app/hermes-agent-src"
     local node_bundle="$ROOT/app/hermes-agent-node"
     local work
+    local agent_ver="main"
+    local agent_env="$ROOT/config/bootstrap/hermes-agent-version.env"
+    if [ -f "$agent_env" ]; then
+        agent_ver="$(grep -E '^HERMES_AGENT_VERSION=' "$agent_env" | awk -F'=' '{print $2}' | tr -d ' ')"
+        [ -z "$agent_ver" ] && agent_ver="main"
+    fi
+    local ref_marker="$node_bundle/.bundled-agent-node-ref"
 
     # 无源码或本地缺 node/npm 时跳过：不阻断整体构建，安装回退到在线 npm install。
     if [ ! -f "$src_dir/package.json" ]; then
@@ -391,10 +415,14 @@ ensure_hermes_agent_node_bundle() {
         fi
     done
 
-    # 已存在且关键 node_modules 已生成则复用（本地增量/缓存）
+    # 已存在且关键 node_modules 已生成且 ref 一致则复用（本地增量/缓存）
     if [ -d "$node_bundle/node_modules" ]; then
-        echo "使用已缓存的 agent node bundle: $node_bundle"
-        return 0
+        if [ -f "$ref_marker" ] && [ "$(cat "$ref_marker" 2>/dev/null | tr -d ' ')" = "$agent_ver" ]; then
+            echo "使用已缓存的 agent node bundle: $node_bundle (ref=$agent_ver)"
+            return 0
+        fi
+        echo "缓存 agent node bundle ref($(cat "$ref_marker" 2>/dev/null)) 与当前 $agent_ver 不一致，重新准备..."
+        rm -rf "$node_bundle"
     fi
 
     echo "准备 agent node bundle（browser tools + TUI 依赖）..."
@@ -457,10 +485,52 @@ ensure_hermes_agent_node_bundle() {
     done < "$pkg_list"
     rm -f "$pkg_list"
 
+    # 补全 npm workspace 的 file: 依赖源码包，使其 node_modules 内的符号链接在
+    # 归档内可解析 —— 这是"设置目录权限失败"的根因修复点。
+    # 背景：npm 把 workspace 的 file: 依赖在 node_modules 内建为相对符号链接
+    # （如 @hermes/ink -> ../../ui-tui/packages/hermes-ink），但这些被链接的源码包
+    # 自身没有 node_modules，上面的收集循环只复制「含 node_modules 的目录」，
+    # 因此链接目标未被镜像进 bundle → 归档内出现悬空符号链接。fnOS 安装时递归
+    # chmod/chown 遍历遇到悬空链接会直接报"设置目录权限失败"。
+    # 这里按 node_modules 内的符号链接反查目标源码包（在 work 中可解析），
+    # 把缺失的目标源码包一并镜像进 bundle，使符号链接在归档内可解析。
+    # 注意：macOS 上 /var 是 /private/var 的符号链接，mktemp -d 返回逻辑路径
+    # （/var/folders/...）而 readlink -f 返回物理路径（/private/var/...），
+    # 直接拿 $work 与 $real 比较会因前缀不一致而全部跳过。这里先把 $work
+    # 也 readlink -f 规范化到同一物理路径再比较，Linux 上二者本就一致。
+    local real_work
+    real_work="$(readlink -f "$work" 2>/dev/null || echo "$work")"
+    local ws_count=0
+    while IFS= read -r link; do
+        [ -L "$link" ] || continue
+        # 跳过 .bin 下的 wrapper 链接：它们指向同级已复制的依赖包，不会悬空
+        case "$link" in */.bin/*) continue ;; esac
+        # readlink -f 在 work 内可解析到真实目标（work 是完整源码 + npm install 副本）
+        local real
+        real="$(readlink -f "$link" 2>/dev/null)" || continue
+        [ -d "$real" ] || continue
+        # 仅处理位于 work 内的目标，防止越界复制构建机其它路径
+        case "$real" in "$real_work"/*) ;; *) continue ;; esac
+        local tgt_rel="${real#"$real_work"/}"
+        # 目标本身就是 node_modules 的已由收集循环处理，跳过
+        case "$tgt_rel" in node_modules|*node_modules) continue ;; esac
+        local dst="$node_bundle/$tgt_rel"
+        [ -e "$dst" ] && continue
+        mkdir -p "$dst"
+        # 排除 node_modules（避免重复）与 .git（bundle 不需要）
+        tar -C "$real" --exclude='node_modules' --exclude='.git' -cf - . 2>/dev/null | tar -xf - -C "$dst"
+        ws_count=$((ws_count + 1))
+        echo "  补全 workspace 源码包: $tgt_rel"
+    done < <(find "$work" -path '*/node_modules/*' -type l 2>/dev/null)
+    if [ "$ws_count" -gt 0 ]; then
+        echo "✅ 已补全 $ws_count 个 workspace 源码包（修复悬空符号链接）"
+    fi
+
     rm -rf "$work"
 
     if [ -d "$node_bundle/node_modules" ]; then
-        echo "✅ agent node bundle 已生成: $node_bundle (共 $count 个 node_modules 树)"
+        echo "$agent_ver" > "$ref_marker"
+        echo "✅ agent node bundle 已生成: $node_bundle (共 $count 个 node_modules 树, ref=$agent_ver)"
     else
         echo "::warning:: agent node bundle 未生成 node_modules，安装将回退在线 npm"
     fi
@@ -573,13 +643,7 @@ def sanitize_app_tgz(data):
                 m.gid = 0
                 m.uname = 'root'
                 m.gname = 'root'
-                try:
-                    f = in_tar.extractfile(m)
-                except Exception as e:
-                    print(f"WARN: extract symlink {m.name} failed: {e}", file=sys.stderr)
-                    removed += 1
-                    continue
-                out_tar.addfile(m, f)
+                out_tar.addfile(m)
                 kept += 1
             else:
                 removed += 1
@@ -655,6 +719,8 @@ try:
             info.mode = 0o644
             info.uid = 0
             info.gid = 0
+            info.uname = 'root'
+            info.gname = 'root'
             out_tar.addfile(info, io.BytesIO(new_app))
         else:
             full = os.path.join(tmp, name)
@@ -664,9 +730,34 @@ try:
                 info.mode = 0o755
                 info.uid = 0
                 info.gid = 0
+                info.uname = 'root'
+                info.gname = 'root'
                 out_tar.addfile(info)
             else:
-                out_tar.add(full, arcname=name)
+                # 规范化属主为 root:root、权限正规化（脚本可执行位依赖磁盘文件模式，
+                # normalize_*_line_endings 之外由 normalize_app_permissions 风格处理；
+                # 这里直接读磁盘文件模式，可执行位=>755 否则 644，去掉 setuid 等）。
+                ti = tarfile.TarInfo(name=name)
+                st = os.stat(full)
+                ti.size = st.st_size
+                ti.mtime = 0
+                ti.uid = 0
+                ti.gid = 0
+                ti.uname = 'root'
+                ti.gname = 'root'
+                mode = st.st_mode & 0o7777
+                mode &= ~0o7000  # 去掉 setuid/setgid/sticky
+                # cmd/ 下的生命周期脚本必须可执行，否则 fnOS 调用时 permission denied；
+                # config/bootstrap/*.sh 同理。其余按磁盘模式判定。
+                if name.startswith('cmd/') or name.startswith('config/bootstrap/'):
+                    mode = 0o755
+                elif mode & 0o111:
+                    mode = 0o755
+                else:
+                    mode = 0o644
+                ti.mode = mode
+                with open(full, 'rb') as fp:
+                    out_tar.addfile(ti, fp)
     out_tar.close()
 
     with gzip.open(dst, 'wb', compresslevel=9) as gz:

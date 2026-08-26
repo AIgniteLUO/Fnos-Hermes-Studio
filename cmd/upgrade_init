@@ -1,11 +1,28 @@
 #!/bin/bash
 
-### 升级前回调 — 停止应用并清理残留进程，避免解压新文件时冲突
+### 升级前回调 — 停止应用并清理所有残留进程与句柄，避免解压覆盖与权限设置冲突
 
-TRIM_APPDEST="${TRIM_APPDEST:-/vol1/@appcenter/hermes-studio}"
-TRIM_PKGHOME="${TRIM_PKGHOME:-/vol1/@apphome/hermes-studio}"
-TRIM_PKGVAR="${TRIM_PKGVAR:-/vol1/@appdata/hermes-studio}"
-LOG_FILE="${TRIM_PKGVAR}/info.log"
+# 动态推导路径，避免 hardcode /vol1 导致在 /vol2 /vol3 上找不到卷
+_resolve_paths() {
+    local app_link="/var/apps/hermes-studio"
+    if [ -z "${TRIM_APPDEST}" ] && [ -e "${app_link}" ]; then
+        TRIM_APPDEST="$(readlink -f "${app_link}" 2>/dev/null)"
+    fi
+    if [ -z "${TRIM_PKGHOME}" ] && [ -L "${app_link}/home" ]; then
+        TRIM_PKGHOME="$(readlink -f "${app_link}/home" 2>/dev/null)"
+    fi
+    if [ -z "${TRIM_PKGVAR}" ] && [ -L "${app_link}/var" ]; then
+        TRIM_PKGVAR="$(readlink -f "${app_link}/var" 2>/dev/null)"
+    fi
+    if [ -n "${TRIM_APPDEST}" ]; then
+        [ -z "${TRIM_PKGHOME}" ] && TRIM_PKGHOME="$(echo "${TRIM_APPDEST}" | sed 's|/@appcenter/|/@apphome/|')"
+        [ -z "${TRIM_PKGVAR}" ] && TRIM_PKGVAR="$(echo "${TRIM_APPDEST}" | sed 's|/@appcenter/|/@appdata/|')"
+    fi
+}
+_resolve_paths
+
+LOG_FILE="${TRIM_PKGVAR:-/tmp/hermes-studio-var}/info.log"
+mkdir -p "$(dirname "${LOG_FILE}")" 2>/dev/null || true
 
 log_msg() {
     local msg="$(date '+%Y-%m-%d %H:%M:%S') - [upgrade_init] $1"
@@ -13,16 +30,25 @@ log_msg() {
 }
 
 log_msg "=== upgrade_init start ==="
+log_msg "TRIM_APPDEST=${TRIM_APPDEST} TRIM_PKGHOME=${TRIM_PKGHOME} TRIM_PKGVAR=${TRIM_PKGVAR}"
 
-# 强制 kill 残留进程
+# 1. 强制终止所有相关运行与后台安装进程（避免文件句柄占用导致覆盖/权限失败）
 pkill -9 -f "bin/hermes-web-ui" 2>/dev/null || true
 pkill -9 -f "dist/server/index.js" 2>/dev/null || true
+pkill -9 -f "hermes-agent" 2>/dev/null || true
+pkill -9 -f "install-agent" 2>/dev/null || true
+pkill -9 -f "hermes gateway" 2>/dev/null || true
+pkill -9 -f "hermes_bridge" 2>/dev/null || true
+pkill -9 -f "hermes-studio-mcp" 2>/dev/null || true
+pkill -9 -f "mcp_stdio_watchdog" 2>/dev/null || true
+pkill -9 -f "playwright" 2>/dev/null || true
 
-# 等待进程完全退出（最多 10 秒）
+# 2. 等待进程完全释放（最多 8 秒）
 _wait=0
-while [ ${_wait} -lt 10 ]; do
+while [ ${_wait} -lt 8 ]; do
     if ! pgrep -f "bin/hermes-web-ui" >/dev/null 2>&1 \
-       && ! pgrep -f "dist/server/index.js" >/dev/null 2>&1; then
+       && ! pgrep -f "dist/server/index.js" >/dev/null 2>&1 \
+       && ! pgrep -f "install-agent" >/dev/null 2>&1; then
         break
     fi
     sleep 1
@@ -30,11 +56,12 @@ while [ ${_wait} -lt 10 ]; do
 done
 log_msg "进程清理完成 (等待 ${_wait}s)"
 
-# 删除残留 PID 文件
+# 3. 清理残留 PID 文件与 IPC socket
 rm -f "${TRIM_PKGHOME}/data/server.pid" 2>/dev/null || true
+rm -f "${TRIM_PKGHOME}/hermes-home/.install-agent.pid" 2>/dev/null || true
+rm -f /tmp/hermes-agent-bridge.sock 2>/dev/null || true
+rm -f /tmp/hermes-web-ui.sock 2>/dev/null || true
 
-# 额外等待 2 秒，确保文件系统释放所有句柄
-sleep 2
-
+sleep 1
 log_msg "=== upgrade_init end ==="
 exit 0

@@ -244,6 +244,24 @@ jobs:
           else
             echo "⚠️ 未包含 hermes-agent-node/ui-tui/node_modules，TUI 可能仍需联网安装（其余依赖已离线）"
           fi
+          # 悬空符号链接校验：v0.6.47 起因 @hermes/ink 与 @hermes/shared 两个 npm
+          # workspace 的 file: 依赖符号链接目标未随源码包一起镜像进 FPK，导致
+          # app.tgz 内出现悬空链接。fnOS 安装时递归 chmod/chown 遍历悬空链接会
+          # 直接报"设置目录权限失败"并中止安装。build-fpk.sh 的补全逻辑修复后，
+          # 这两个符号链接目标（ui-tui/packages/hermes-ink、apps/shared）应同时
+          # 存在于包内。这里硬性校验链接目标存在，防止补全逻辑回归。
+          if echo "$INNER" | grep -qE '^(app/)?hermes-agent-node/ui-tui/packages/hermes-ink/package\.json$'; then
+            echo "✅ 检测到 @hermes/ink 符号链接目标源码包（悬空链接已修复）"
+          else
+            echo "::error:: FPK 缺少 @hermes/ink 链接目标（ui-tui/packages/hermes-ink），安装将报'设置目录权限失败'，构建中止"
+            exit 1
+          fi
+          if echo "$INNER" | grep -qE '^(app/)?hermes-agent-node/apps/shared/package\.json$'; then
+            echo "✅ 检测到 @hermes/shared 符号链接目标源码包（悬空链接已修复）"
+          else
+            echo "::error:: FPK 缺少 @hermes/shared 链接目标（apps/shared），安装将报'设置目录权限失败'，构建中止"
+            exit 1
+          fi
 
       # 额外生成一个固定文件名，便于「总是下载最新版」。
       - name: Copy to rolling asset name
