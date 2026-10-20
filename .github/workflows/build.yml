@@ -47,7 +47,7 @@ jobs:
       - name: Get version from manifest
         id: version
         run: |
-          VERSION=$(grep "^version" ${{ env.MANIFEST_FILE }} | awk -F'=' '{print $2}' | tr -d ' ')
+          VERSION=$(grep "^version" ${{ env.MANIFEST_FILE }} | awk -F'=' '{print $2}' | tr -d ' \r\n')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "从 manifest 读取的版本号：v$VERSION"
 
@@ -176,7 +176,7 @@ jobs:
 
       # 校验 FPK 基本结构（外层含 manifest / cmd/ / wizard/ / app.tgz 必须存在）。
       # app/node（bundled 运行时，含编译好的 node-pty）为强制项：缺它安装会回退
-      # npm install，而 fnOS 无 gcc 编不出 node-pty → 安装卡死。绝不允许再发这种包。
+      # 从 release 联网下载，离线/弱网环境下装不上。绝不允许再发这种包。
       - name: Verify FPK structure
         run: |
           FPK="dist/fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk"
@@ -211,7 +211,7 @@ jobs:
           if echo "$INNER" | grep -qE '^(app/)?node/lib/node_modules/hermes-web-ui/bin/hermes-web-ui\.mjs$'; then
             echo "✅ 检测到 bundled 运行时 app/node（离线安装，无需联网编译）"
           else
-            echo "::error:: FPK 未包含 bundled app/node，安装将回退 npm install 并因 fnOS 缺 gcc 失败，构建中止"
+            echo "::error:: FPK 未包含 bundled app/node，安装将回退联网下载，离线环境装不上，构建中止"
             exit 1
           fi
           if echo "$INNER" | grep -qE '(app/)?node-pty/build/Release/[^/]*\.node$'; then
@@ -308,7 +308,7 @@ jobs:
           **打包追踪的上游版本**（由 auto-update.yml 自动对齐）：hermes-web-ui `__WEBUI__` ｜ hermes-agent `__AGENT__`
 
           ## 本次更新（v${{ steps.target_version.outputs.target_version }}）
-          - 跟随官方 GitHub Release 预构建产物（EKKOLearnAI/hermes-studio）自动对齐 hermes-web-ui 版本，比 npm 发布更及时。
+          - 跟随上游 fork GitHub Release 预构建产物(AIgniteLUO/hermes-studio,自维护 1.x 线)自动对齐 hermes-web-ui 版本;该线未上 npm registry,构建与安装均从 release 取包。
           - 内置 Hermes Agent 离线源码包（按 NousResearch/hermes-agent 最新 release 标签钉版本），安装时跳过 GitHub git clone，适合 NAS 弱网环境。
           - Agent browser tools + TUI 依赖预装进 FPK，首启跳过后台 npm install，启动更快。
           - bundled node 运行时不入库，CI 用 Node v24 编译含原生 node-pty，安装走离线复制，避免 fnOS 缺 gcc 导致安装卡死。

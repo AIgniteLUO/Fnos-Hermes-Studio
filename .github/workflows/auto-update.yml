@@ -1,8 +1,8 @@
 name: Auto-update upstream versions
 
 # 自动跟踪上游版本并触发重建：
-#   - hermes-web-ui（官方 GitHub Release：EKKOLearnAI/hermes-studio，0.6.x 线）：取最新版本标签，
-#     构建时从该 release 的预构建产物 hermes-web-ui-${ver}.tar.gz 获取（比 npm 发布更及时）。
+#   - hermes-web-ui(上游 fork GitHub Release:AIgniteLUO/hermes-studio,自维护 1.x 线):取最新版本标签,
+#     构建时从该 release 的预构建产物 hermes-web-ui-${ver}.tar.gz 获取（1.x 未上 npm registry,release 为唯一权威源）。
 #   - hermes-agent（GitHub release，日期版如 v2026.8.3）：取 NousResearch/hermes-agent 最新 release 标签。
 # 任一与 config/bootstrap/*.env 中记录不一致时，更新 env 文件与 manifest 版本号，
 # commit 并 push 到 main —— 这会触发 build.yml 构建并发布新 FPK（自动发版）。
@@ -30,10 +30,10 @@ jobs:
         id: detect
         run: |
           set -e
-          # hermes-web-ui：跟踪官方 GitHub Release（EKKOLearnAI/hermes-studio）。
-          # 官方在 release 上随版本即时发布预构建产物，比 npm 发布更及时；其 release 被官方
+          # hermes-web-ui:跟踪上游 fork GitHub Release(AIgniteLUO/hermes-studio)。
+          # fork 在 release 上随版本即时发布预构建产物(1.x 从未上 npm registry);其 release 被
           # 显式标记为「非 latest」，故不能取 releases/latest，需自行过滤版本标签（^v\d+\.\d+\.\d+$）。
-          WEBUI_LATEST="$(curl -fsSL --max-time 30 "https://api.github.com/repos/EKKOLearnAI/hermes-studio/releases?per_page=100" \
+          WEBUI_LATEST="$(curl -fsSL --max-time 30 "https://api.github.com/repos/AIgniteLUO/hermes-studio/releases?per_page=100" \
             | python3 -c 'import sys,json,re; d=json.load(sys.stdin); rel=[r for r in d if re.match(r"^v\d+\.\d+\.\d+$", r["tag_name"]) and not r.get("prerelease")]; rel.sort(key=lambda r: r["published_at"], reverse=True); print(rel[0]["tag_name"].lstrip("v") if rel else "")')"
           # hermes-agent：仍跟踪 NousResearch/hermes-agent 最新 release 标签
           AGENT_LATEST="$(curl -fsSL --max-time 30 -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
@@ -45,14 +45,14 @@ jobs:
 
           # 校验两端版本真实存在，避免把不存在的标签/版本写进 env 导致后续构建失败
           if [ -z "$WEBUI_LATEST" ]; then
-            echo "::error:: 未能从官方 release 解析出 hermes-web-ui 版本，中止更新"
+            echo "::error:: 未能从上游 release 解析出 hermes-web-ui 版本,中止更新"
             exit 1
           fi
-          # web-ui：确认官方 release 上确实存在对应的预构建产物 hermes-web-ui-${ver}.tar.gz
-          WEBUI_ASSET_OK="$(curl -fsSL --max-time 30 "https://api.github.com/repos/EKKOLearnAI/hermes-studio/releases/tags/v${WEBUI_LATEST}" \
+          # web-ui:确认上游 release 上确实存在对应的预构建产物 hermes-web-ui-${ver}.tar.gz
+          WEBUI_ASSET_OK="$(curl -fsSL --max-time 30 "https://api.github.com/repos/AIgniteLUO/hermes-studio/releases/tags/v${WEBUI_LATEST}" \
             | WV="$WEBUI_LATEST" python3 -c "import sys,json,os; d=json.load(sys.stdin); names=[a['name'] for a in d.get('assets',[])]; print('yes' if f'hermes-web-ui-{os.environ[\"WV\"]}.tar.gz' in names else 'no')")"
           if [ "$WEBUI_ASSET_OK" != "yes" ]; then
-            echo "::error:: 官方 release v${WEBUI_LATEST} 缺少 hermes-web-ui-${WEBUI_LATEST}.tar.gz 预构建产物，中止更新"
+            echo "::error:: 上游 release v${WEBUI_LATEST} 缺少 hermes-web-ui-${WEBUI_LATEST}.tar.gz 预构建产物,中止更新"
             exit 1
           fi
           if ! curl -fsSL --max-time 30 -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
@@ -74,7 +74,7 @@ jobs:
           CUR_WEBUI="$(grep '^HERMES_STUDIO_VERSION=' "$WEBUI_ENV" | cut -d= -f2)"
           CUR_AGENT="$(grep '^HERMES_AGENT_VERSION=' "$AGENT_ENV" | cut -d= -f2)"
 
-          CUR_VER="$(grep '^version' manifest | cut -d= -f2 | tr -d ' ')"
+          CUR_VER="$(grep '^version' manifest | cut -d= -f2 | tr -d ' \r\n')"
           CUR_BASE="${CUR_VER%-*}"
           CUR_BUILD="${CUR_VER##*-}"
           case "$CUR_BUILD" in

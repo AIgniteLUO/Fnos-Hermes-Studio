@@ -5,7 +5,7 @@
 ### 部署方式：
 ###   1. 优先使用 FPK 内 bundled 的 node_modules（app/node/）：本地复制到 data/，
 ###      无需联网，安装只需几秒，也不会被 fnOS 安装超时掐断。
-###   2. 若 bundled node 不存在（开发/测试场景），回退到 npm install。
+###   2. 若 bundled node 不存在（开发/测试场景），回退到从上游 GitHub Release 下载。
 ###
 ### 运行时依赖：manifest 中 install_dep_apps=nodejs_v24，由 fnOS 自动安装 Node.js 运行时。
 
@@ -114,20 +114,62 @@ fix_bundled_bin_links() {
             cp -a "${pkg_dir}/bin/hermes-web-ui.mjs" "${bin_dir}/hermes-web-ui"
         chmod +x "${bin_dir}/hermes-web-ui" 2>/dev/null || true
     fi
-    # hermes-web-ui-mcp
-    if [ -f "${pkg_dir}/bin/hermes-web-ui-mcp.mjs" ]; then
-        rm -f "${bin_dir}/hermes-web-ui-mcp"
-        ln -s "${rel}/hermes-web-ui-mcp.mjs" "${bin_dir}/hermes-web-ui-mcp" 2>/dev/null || \
-            cp -a "${pkg_dir}/bin/hermes-web-ui-mcp.mjs" "${bin_dir}/hermes-web-ui-mcp"
-        chmod +x "${bin_dir}/hermes-web-ui-mcp" 2>/dev/null || true
+}
+
+# 从上游 fork 的 GitHub Release 下载预构建 web-ui 包并铺开为 npm prefix 布局。
+#
+# 背景:本 FPK 打包的 hermes-web-ui 1.x 只发布在 AIgniteLUO/hermes-studio 的
+# GitHub Release 上,从未发布到 npm registry(npm 上 latest 仍停在 0.7.x)。
+# 因此旧版「回退 npm install -g hermes-web-ui@<ver>」在 1.x 必然 404。
+# bundled node 缺失时改为从同一权威源下载,与 build-fpk.sh 的产物源保持一致。
+# 产物顶层为 webui/,其内容即 lib/node_modules/hermes-web-ui。
+# 返回 0 表示已成功铺开到 ${NODE_PREFIX}。
+install_web_ui_from_release() {
+    local ver="${HERMES_STUDIO_VERSION}"
+    local asset="hermes-web-ui-${ver}.tar.gz"
+    local url="https://github.com/AIgniteLUO/hermes-studio/releases/download/v${ver}/${asset}"
+    local tmp
+    tmp="$(mktemp -d)" || return 1
+
+    log_msg ">>> 从 release 下载 ${url} ..."
+    if command -v curl >/dev/null 2>&1; then
+        if ! curl -fSL --connect-timeout 30 --max-time 600 -o "${tmp}/${asset}" "${url}" >>"${LOG_FILE}" 2>&1; then
+            log_msg "WARNING: curl 下载 ${url} 失败"
+            rm -rf "${tmp}"
+            return 1
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if ! wget -q -T 600 -O "${tmp}/${asset}" "${url}" >>"${LOG_FILE}" 2>&1; then
+            log_msg "WARNING: wget 下载 ${url} 失败"
+            rm -rf "${tmp}"
+            return 1
+        fi
+    else
+        log_msg "WARNING: curl / wget 均不可用,无法从 release 下载"
+        rm -rf "${tmp}"
+        return 1
     fi
-    # hermes-studio-mcp
-    if [ -f "${pkg_dir}/bin/hermes-studio-mcp.mjs" ]; then
-        rm -f "${bin_dir}/hermes-studio-mcp"
-        ln -s "${rel}/hermes-studio-mcp.mjs" "${bin_dir}/hermes-studio-mcp" 2>/dev/null || \
-            cp -a "${pkg_dir}/bin/hermes-studio-mcp.mjs" "${bin_dir}/hermes-studio-mcp"
-        chmod +x "${bin_dir}/hermes-studio-mcp" 2>/dev/null || true
+
+    if ! tar -xzf "${tmp}/${asset}" -C "${tmp}" >>"${LOG_FILE}" 2>&1; then
+        log_msg "WARNING: 解压 ${asset} 失败"
+        rm -rf "${tmp}"
+        return 1
     fi
+    if [ ! -d "${tmp}/webui" ]; then
+        log_msg "WARNING: release 产物结构异常(缺少顶层 webui/)"
+        rm -rf "${tmp}"
+        return 1
+    fi
+
+    rm -rf "${NODE_PREFIX}" 2>/dev/null || true
+    mkdir -p "${NODE_PREFIX}/lib/node_modules/hermes-web-ui"
+    if ! cp -a "${tmp}/webui/." "${NODE_PREFIX}/lib/node_modules/hermes-web-ui/"; then
+        log_msg "WARNING: 复制 release 产物到 ${NODE_PREFIX} 失败"
+        rm -rf "${tmp}"
+        return 1
+    fi
+    rm -rf "${tmp}"
+    return 0
 }
 
 NODE_ROOT="$(resolve_node_root)"
@@ -273,23 +315,17 @@ if [ -e "${BUNDLED_BIN}" ]; then
     fix_bundled_bin_links
     log_msg "bin symlinks reconstructed for hermes-web-ui"
 else
-    # ── 方式 B：回退 npm install（需联网，较慢） ──
+    # ── 方式 B:回退从上游 release 下载(需联网,较慢) ──
+    # 不再回退 npm:1.x 未发布到 npm registry(npm latest 仍停在 0.7.x),
+    # 旧的 npm install -g hermes-web-ui@${HERMES_STUDIO_VERSION} 在 1.x 必然 404。
     if [ "${SKIP_INSTALL}" = "true" ]; then
         log_msg "Using existing hermes-web-ui ${INSTALLED_VER}"
+    elif install_web_ui_from_release; then
+        fix_bundled_bin_links
+        log_msg "hermes-web-ui ${HERMES_STUDIO_VERSION} installed from release"
     else
-        log_msg ">>> 未找到 bundled node_modules，回退 npm install -g hermes-web-ui@${HERMES_STUDIO_VERSION} ..."
-        export npm_config_prefix="${NODE_PREFIX}"
-        export npm_config_cache="${DATA_DIR}/.npm-cache"
-        export npm_config_registry="${npm_config_registry:-https://registry.npmmirror.com}"
-        export npm_config_progress="false"
-        export npm_config_loglevel="info"
-        export npm_config_engine_strict="false"
-
-        NPM_BIN="${NODE_ROOT}/bin/npm"
-        if ! "${NPM_BIN}" install -g --no-audit --no-fund "hermes-web-ui@${HERMES_STUDIO_VERSION}" >>"${LOG_FILE}" 2>&1; then
-            toast_err "hermes-web-ui 安装失败，请查看日志 ${LOG_FILE}"
-            exit 1
-        fi
+        toast_err "未找到 bundled node_modules,且从 GitHub release 下载 hermes-web-ui ${HERMES_STUDIO_VERSION} 失败(请检查 NAS 外网/代理),详见日志 ${LOG_FILE}"
+        exit 1
     fi
 fi
 
@@ -305,8 +341,8 @@ log_msg "hermes-web-ui installed version: ${ACTUAL_VER}"
 # 4b. 兜底：patch hermes-web-ui 安全头，允许被 fnOS 桌面 iframe 嵌入
 # ---------------------------------------------------------------------------
 # 正常情况下 build-fpk.sh 已在构建时对 bundled node 打过此补丁，install_callback
-# 的方式 A 会原样复制进数据目录。但方式 B（npm install 回退）装出来的是未 patch 的
-# 官方包，这里再补一次，保证两种安装路径下 fnOS 桌面都能窗口内嵌入显示。
+# 的方式 A 会原样复制进数据目录。但方式 B（release 下载兜底）铺开的产物同样未经 patch，
+# 这里再补一次，保证两种安装路径下 fnOS 桌面都能窗口内嵌入显示。
 # 幂等：已是目标值则不重复写入。
 patch_frame_headers_runtime() {
     local server_js="${NODE_PREFIX}/lib/node_modules/hermes-web-ui/dist/server/index.js"

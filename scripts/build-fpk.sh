@@ -21,7 +21,7 @@ cd "$ROOT"
 OUT_DIR="${1:-.}"
 mkdir -p "$OUT_DIR"
 
-VERSION="$(grep '^version' manifest | awk -F'=' '{print $2}' | tr -d ' ')"
+VERSION="$(grep '^version' manifest | awk -F'=' '{print $2}' | tr -d ' \r\n')"
 if [ -z "$VERSION" ]; then
     echo "无法从 manifest 读取 version" >&2
     exit 1
@@ -209,9 +209,9 @@ ensure_hermes_agent_src
 # ── 准备 bundled node（hermes-web-ui 预装 node_modules，含编译好的原生 node-pty） ──
 # 根因：早期 FPK 未打进 app/node，install_callback 回退 npm install -g，而 fnOS 缺
 # 少 gcc/g++ 无法编译 node-pty（原生模块），导致安装卡死/超时（UI 停在 ~55%）。
-# 现在优先从官方 GitHub Release（EKKOLearnAI/hermes-studio）下载「预构建好的 web-ui 包」
+# 现在优先从官方 GitHub Release（AIgniteLUO/hermes-studio）下载「预构建好的 web-ui 包」
 # （hermes-web-ui-${ver}.tar.gz，含 bin/dist/node_modules，node-pty 原生模块已编译），
-# 与上游 release 严格对齐且比 npm 发布更及时；下载失败再回退 npm install -g 编译。
+# 与 release 严格对齐;1.x 未上 npm registry,故不再保留 npm 回退(build 失败即中止)。
 # 打包进 FPK 后，安装时 install_callback 直接走 Path A（离线复制，几秒完成）。
 ensure_node_bundle() {
     local ver_file="$ROOT/config/bootstrap/hermes-studio-version.env"
@@ -248,42 +248,42 @@ ensure_node_bundle() {
     rm -rf "$node_dir"
     mkdir -p "$node_dir"
 
-    # 官方在 GitHub Release 上随版本即时发布预构建好的 web-ui 包
-    # （含 bin/dist/node_modules，node-pty 原生模块已编译），比 npm 发布更及时，
-    # 且与上游 release 严格对齐。优先用官方产物；下载失败再回退 npm 编译。
+    # 上游 fork 在 GitHub Release 上随版本即时发布预构建好的 web-ui 包
+    # (含 bin/dist/node_modules,node-pty 原生模块已编译),与 release 严格对齐。
+    # 注:1.x 只发布在 GitHub Release、未上 npm registry,故不再保留 npm 回退。
     local asset="hermes-web-ui-${ver}.tar.gz"
-    local url="https://github.com/EKKOLearnAI/hermes-studio/releases/download/v${ver}/${asset}"
+    local url="https://github.com/AIgniteLUO/hermes-studio/releases/download/v${ver}/${asset}"
     local tmp
     tmp="$(mktemp -d)"
     local ok=0
-    # 同样加连接超时 + 不吞 stderr，下载异常时能立刻看到原因
-    if curl -fSL --connect-timeout 30 --max-time 300 -o "$tmp/$asset" "$url"; then
-        echo "已下载官方预构建产物: $url"
-        mkdir -p "$pkg_dir"
-        tar -xzf "$tmp/$asset" -C "$tmp"
-        if [ -d "$tmp/webui" ]; then
-            cp -a "$tmp/webui/." "$pkg_dir/"
-            ok=1
+    # 加连接超时 + 不吞 stderr,下载异常时立刻可见;下载或解压失败均重试 3 次
+    local attempt=1
+    while [ "$attempt" -le 3 ]; do
+        if curl -fSL --connect-timeout 30 --max-time 600 -o "$tmp/$asset" "$url"; then
+            echo "已下载上游预构建产物: $url"
+            if tar -xzf "$tmp/$asset" -C "$tmp" && [ -d "$tmp/webui" ]; then
+                mkdir -p "$pkg_dir"
+                cp -a "$tmp/webui/." "$pkg_dir/"
+                ok=1
+                break
+            fi
+            echo "::warning:: 产物解压失败或结构异常(缺少顶层 webui/),重试"
+            rm -f "$tmp/$asset"
         else
-            echo "::warning:: 官方产物结构异常（缺少顶层 webui/），回退 npm install"
+            echo "::warning:: 下载上游产物失败(第 $attempt 次): $url"
         fi
-    else
-        echo "::warning:: 下载官方产物失败（$url），回退 npm install -g hermes-web-ui@$ver"
-    fi
+        attempt=$((attempt + 1))
+        if [ "$attempt" -le 3 ]; then
+            sleep 5
+        fi
+    done
 
     if [ "$ok" != "1" ]; then
-        # 回退路径：npm install（需 gcc/g++ 编译 node-pty）
-        for t in gcc g++ make python3 node npm; do
-            if ! command -v "$t" >/dev/null 2>&1; then
-                echo "::error:: 回退 npm 编译缺少必需工具: $t" >&2
-                exit 1
-            fi
-        done
-        echo "node: $(node --version)  npm: $(npm --version)"
-        if ! npm install -g --no-audit --no-fund --prefix "$node_dir" "hermes-web-ui@${ver}"; then
-            echo "::error:: npm install hermes-web-ui@${ver} 失败" >&2
-            exit 1
-        fi
+        # 1.x 未发布到 npm registry(npm latest 仍停在 0.7.x),npm 回退必然 404;
+        # 直接失败,避免产出缺 bundled node 的残包。
+        echo "::error:: 无法从 $url 获取预构建 web-ui 包,构建中止(检查网络/代理,或确认该 tag 下存在 ${asset})" >&2
+        rm -rf "$tmp"
+        exit 1
     fi
 
     rm -rf "$tmp"
@@ -501,6 +501,8 @@ ensure_hermes_agent_node_bundle() {
     local real_work
     real_work="$(readlink -f "$work" 2>/dev/null || echo "$work")"
     local ws_count=0
+    local links_file="$work/.workspace-links"
+    find "$work" -path '*/node_modules/*' -type l 2>/dev/null > "$links_file"
     while IFS= read -r link; do
         [ -L "$link" ] || continue
         # 跳过 .bin 下的 wrapper 链接：它们指向同级已复制的依赖包，不会悬空
@@ -521,7 +523,8 @@ ensure_hermes_agent_node_bundle() {
         tar -C "$real" --exclude='node_modules' --exclude='.git' -cf - . 2>/dev/null | tar -xf - -C "$dst"
         ws_count=$((ws_count + 1))
         echo "  补全 workspace 源码包: $tgt_rel"
-    done < <(find "$work" -path '*/node_modules/*' -type l 2>/dev/null)
+    done < "$links_file"
+    rm -f "$links_file"
     if [ "$ws_count" -gt 0 ]; then
         echo "✅ 已补全 $ws_count 个 workspace 源码包（修复悬空符号链接）"
     fi
@@ -621,7 +624,7 @@ postprocess_fpk() {
     local src="$1" dst="$2"
     echo "后处理 FPK：移除软链、重置属主、正规化权限 ..."
     python3 - "$src" "$dst" <<'PY'
-import tarfile, hashlib, io, os, tempfile, shutil, gzip, sys
+import tarfile, hashlib, io, os, tempfile, shutil, gzip, sys, inspect
 
 def sanitize_app_tgz(data):
     in_buf = io.BytesIO(data)
@@ -673,6 +676,16 @@ def sanitize_app_tgz(data):
 
 src, dst = sys.argv[1], sys.argv[2]
 tmp = tempfile.mkdtemp()
+# `filter` 参数由 Python 3.12 引入并回补到 3.11.4 / 3.10.12 / 3.9.17 / 3.8.17。
+# 更早的解释器（如 Debian bookworm 自带的 3.11.2）不接受该关键字，会直接 TypeError。
+# 这里按能力探测：能用则显式 fully_trusted（避免 3.14 起默认 filter 改变解包行为），
+# 不能用则退回旧签名——FPK 是本脚本自己刚打出来的，来源可信。
+_EXTRACT_KW = {}
+try:
+    if 'filter' in inspect.signature(tarfile.TarFile.extract).parameters:
+        _EXTRACT_KW['filter'] = 'fully_trusted'
+except Exception:
+    _EXTRACT_KW = {}
 try:
     # 解外层 FPK
     outer = tarfile.open(src, 'r:gz')
@@ -680,7 +693,7 @@ try:
     for m in outer.getmembers():
         if m.name == 'app.tgz':
             continue
-        outer.extract(m, tmp)
+        outer.extract(m, tmp, **_EXTRACT_KW)
     outer.close()
 
     # 清洗 app.tgz
@@ -791,14 +804,28 @@ if [ -n "$FNPACK" ]; then
     if ! python3 -c "import tarfile, sys; sys.exit(0 if 'manifest.checksum' in [m.name for m in tarfile.open('${SRC_FPK}','r:gz').getmembers()] else 1)" 2>/dev/null; then
         echo "fnpack 未生成 manifest.checksum，手动补充..."
         python3 - "$SRC_FPK" <<'PY'
-import tarfile, hashlib, io, os, sys, tempfile, shutil, gzip
+import tarfile, hashlib, io, os, sys, tempfile, shutil, gzip, inspect
 src = sys.argv[1]
 t = tarfile.open(src, 'r:gz')
 app_data = t.extractfile('app.tgz').read()
 sum_val = hashlib.md5(app_data).hexdigest()
 tmp = tempfile.mkdtemp()
+# `filter` 参数由 Python 3.12 引入并回补到 3.11.4 / 3.10.12 / 3.9.17 / 3.8.17。
+# 更早的解释器（如 Debian bookworm 自带的 3.11.2）不接受该关键字，会直接 TypeError。
+# 这里按能力探测：能用则显式 fully_trusted（避免 3.14 起默认 filter 改变解包行为），
+# 不能用则退回旧签名——FPK 是本脚本自己刚打出来的，来源可信。
+_EXTRACT_KW = {}
+try:
+    if 'filter' in inspect.signature(tarfile.TarFile.extract).parameters:
+        _EXTRACT_KW['filter'] = 'fully_trusted'
+except Exception:
+    _EXTRACT_KW = {}
+
+def _extract(tf, member, path):
+    tf.extract(member, path, **_EXTRACT_KW)
+
 for m in t.getmembers():
-    t.extract(m, tmp, filter='fully_trusted')
+    _extract(t, m, tmp)
 manifest_path = os.path.join(tmp, 'manifest')
 with open(manifest_path, 'rb') as f:
     content = f.read().replace(b'\r\n', b'\n')

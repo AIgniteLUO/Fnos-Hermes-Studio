@@ -8,7 +8,7 @@
             },
             {
                 "type": "tips",
-                "helpText": "<br>本包以 npm 原生方式安装（与官方一致，非 Docker）。首次安装会自动下载 Node.js 运行时并全局安装 hermes-web-ui，请耐心等待。"
+                "helpText": "<br>本包以离线方式安装（非 Docker）：hermes-web-ui 的运行时已随包内置，安装时直接复制到数据目录，无需联网下载。首次启动会自动在后台安装 Hermes Agent 后端（约 1-3 分钟），请稍候。"
             },
             {
                 "type": "tips",
