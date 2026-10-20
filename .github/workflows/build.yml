@@ -66,19 +66,25 @@ jobs:
       # fnpack 为飞牛官方打包工具（从 static2.fnnas.com 下载）。CI 网络可能无法访问该
       # CDN，因此设为「可选」：下载/校验失败时不阻断，build-fpk.sh 会自动回退到
       # 纯 tar+gzip 构建（双层 tar.gz 格式，经真实 .fpk 样本验证与官方结构一致）。
+      #
+      # 版本必须是 1.2.3+：1.0.4 的 Linux 版打包时会把符号链接的 linkname 改写成
+      # basename（`../jiti/lib/jiti-cli.mjs` -> `jiti`），变成自指循环链接。
+      # fnOS 设应用目录权限时 acl_get_file 会跟随链接，遇到 ELOOP 直接报
+      # 「set app dir permissions failed: acl_get_file failed」并中止安装。
+      # 已在同一 fixture 上验证：1.2.3-linux 保留相对目标，1.0.4-linux 改写成自指。
       - name: Install fnpack (optional; falls back to tar+gzip)
         continue-on-error: true
         run: |
           set +e
-          URL="https://static2.fnnas.com/fnpack/fnpack-1.0.4-linux-amd64"
+          URL="https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64"
           for i in 1 2 3; do
             echo "尝试下载 fnpack ($i/3)..."
             if curl -fsSL "$URL" -o fnpack \
                && chmod +x fnpack \
                && mv fnpack /usr/local/bin/ \
                && command -v fnpack >/dev/null \
-               && fnpack --version; then
-              echo "fnpack 就绪"
+               && fnpack 2>&1 | grep -q '1\.2\.3'; then
+              echo "fnpack 就绪 (1.2.3)"
               exit 0
             fi
             rm -f fnpack

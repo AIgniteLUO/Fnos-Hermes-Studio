@@ -703,6 +703,7 @@ def sanitize_app_tgz(data):
     out_tar = tarfile.open(fileobj=out_buf, mode='w:gz', compresslevel=9)
     removed = 0
     kept = 0
+    bad_links = []
     for m in in_tar.getmembers():
         if m.issym() or m.islnk():
             # 保留 node_modules 内的软链：npm 的 workspace 链接（如
@@ -712,6 +713,11 @@ def sanitize_app_tgz(data):
             # 只剥离 node_modules 之外的软链（如 app/node/bin 下自引用/损坏的
             # bin 链接），这些由 install_callback 的 fix_bundled_bin_links 重建。
             if '/node_modules/' in m.name:
+                # 自指检测：linkname 恰好等于自身 basename（如 jiti -> jiti）。
+                # fnOS 设权限时 acl_get_file 跟随链接会 ELOOP 失败。
+                base = m.name.rstrip('/').rsplit('/', 1)[-1]
+                if m.linkname == base:
+                    bad_links.append((m.name, m.linkname))
                 m.uid = 0
                 m.gid = 0
                 m.uname = 'root'
@@ -742,7 +748,7 @@ def sanitize_app_tgz(data):
         kept += 1
     out_tar.close()
     print(f"  app.tgz: removed {removed} symlinks/hardlinks, kept {kept} regular members")
-    return out_buf.getvalue()
+    return out_buf.getvalue(), bad_links
 
 src, dst = sys.argv[1], sys.argv[2]
 tmp = tempfile.mkdtemp()
@@ -767,7 +773,18 @@ try:
     outer.close()
 
     # 清洗 app.tgz
-    new_app = sanitize_app_tgz(app_data)
+    new_app, bad_links = sanitize_app_tgz(app_data)
+    if bad_links:
+        # 自指链接（linkname == basename）会让 fnOS 设权限时的 acl_get_file 报 ELOOP，
+        # 整个安装中止并提示「设置目录权限失败」。旧版 fnpack（如 1.0.4 的 Linux 版）
+        # 在打包时会把相对目标改写成 basename，这里必须拦下来，绝不能发布。
+        print("ERROR: app.tgz 内含自指符号链接，fnOS 安装会因 acl_get_file ELOOP 失败:", file=sys.stderr)
+        for n, l in bad_links[:20]:
+            print(f"  {n} -> {l}", file=sys.stderr)
+        if len(bad_links) > 20:
+            print(f"  ... 共 {len(bad_links)} 条", file=sys.stderr)
+        print("提示: 升级 fnpack 到 1.2.3+（旧版 Linux 构建会改写符号链接目标）", file=sys.stderr)
+        sys.exit(1)
     checksum = hashlib.md5(new_app).hexdigest()
 
     # 更新 manifest
