@@ -88,6 +88,60 @@ fi
 # 很多 NAS 无法稳定连接 GitHub，安装时 git clone 会失败，导致应用启动不了。
 # 构建时把源码包嵌入 FPK，install_callback 会优先用它而跳过网络 clone。
 # 该目录不入 git（见 .gitignore），每次构建时按需下载/复用。
+
+# 统计 .git/objects 下的松散对象数（xx/38位哈希）。
+# 用 find -name 而非 -regex：BSD find 不支持 -regextype，-name 两边都能用。
+count_loose_git_objects() {
+    local repo="$1"
+    [ -d "$repo/.git/objects" ] || { echo 0; return 0; }
+    local n
+    n="$(find "$repo/.git/objects" -mindepth 2 -maxdepth 2 -type f -name '??????????????????????????????????????' 2>/dev/null | wc -l | tr -d ' ')"
+    [ -n "$n" ] || n=0
+    echo "$n"
+}
+
+# 把 app/hermes-agent-src/.git 从「近 2 万个松散对象」压成单个 pack。
+#
+# 这不是性能优化，是安装能否成功的硬前提：
+#   git init + add -A + commit 在部分环境（Debian bookworm 的 git 2.39、无 TTY 的
+#   容器）不会触发 auto gc，.git/objects/ 会留下 19k+ 个「xx/38位哈希」文件 +
+#   256 个子目录，被原样打进 app.tgz。成员数从 ~3.4 万涨到 ~5.4 万后，fnOS 安装
+#   时按目录递归设置权限（官方确认是"遍历目录下所有文件"），应用中心超时并报
+#   「设置目录权限失败」。v1.2.0-1 首发即因此翻车。
+#   压包后 .git 只剩 ~40 个条目，与历史上所有可正常安装的版本一致。
+#
+# 只压包，不删 .git —— install.sh 的离线分支靠 `-d "$INSTALL_DIR/.git"` 判定，
+# 删了会退化成联网 git clone（NAS 弱网正是要避免的场景）。
+# 幂等：对象已全部在 pack 里时 gc 是空操作。
+ensure_agent_git_packed() {
+    local repo="$1"
+    [ -d "$repo/.git" ] || return 0
+    command -v git >/dev/null 2>&1 || {
+        echo "WARNING: 无 git，跳过 .git 压包（FPK 成员数可能偏大）"
+        return 0
+    }
+
+    local loose
+    loose="$(count_loose_git_objects "$repo")"
+    # 阈值取 200：正常运行下要么 0，要么上万个，中间态没有意义
+    if [ "$loose" -le 200 ]; then
+        return 0
+    fi
+
+    echo "压缩 $repo/.git 的 $loose 个松散对象（否则 fnOS 安装会因文件数过多超时）..."
+    # dubious ownership：CI/容器里 repo 属主常与当前用户不同，git 会拒绝操作
+    git -c safe.directory="$repo" -C "$repo" gc --quiet --prune=now 2>/dev/null \
+        || git -c safe.directory="$repo" -C "$repo" repack -a -d -q 2>/dev/null \
+        || true
+
+    loose="$(count_loose_git_objects "$repo")"
+    if [ "$loose" -gt 200 ]; then
+        echo "WARNING: .git 压包后仍有 $loose 个松散对象，FPK 成员数会偏大，fnOS 安装可能超时"
+    else
+        echo "✅ .git 已压包（剩余松散对象 $loose 个）"
+    fi
+}
+
 ensure_hermes_agent_src() {
     local src_dir="$ROOT/app/hermes-agent-src"
     local marker="$src_dir/.offline-bundle"
@@ -108,12 +162,16 @@ ensure_hermes_agent_src() {
         if [ -f "$ref_marker" ]; then
             if [ "$(cat "$ref_marker" 2>/dev/null)" = "$agent_ver" ]; then
                 echo "使用已缓存的 Hermes Agent 源码包: $src_dir (ref=$agent_ver)"
+                # 缓存目录可能是旧构建留下的（带 19k 松散对象），复用前必须再压一次，
+                # 否则坏包会一直复现。幂等，已压过则直接返回。
+                ensure_agent_git_packed "$src_dir"
                 return 0
             fi
             echo "缓存 Agent 源码 ref($(cat "$ref_marker" 2>/dev/null)) 与当前 $agent_ver 不一致，重新下载"
             rm -rf "$src_dir"
         else
             echo "使用手动放置的 Hermes Agent 源码包: $src_dir"
+            ensure_agent_git_packed "$src_dir"
             return 0
         fi
     fi
@@ -197,7 +255,19 @@ ensure_hermes_agent_src() {
         git config user.name "FPK Builder" 2>/dev/null || true
         git add -A 2>/dev/null || true
         git commit -q -m "offline bundle" 2>/dev/null || true
+
+        # 把松散对象压成单个 pack —— 不是优化，是正确性要求。
+        # git init + add -A + commit 在部分环境（如 Debian bookworm 的 git 2.39、
+        # 无 TTY 的容器里）不会触发 auto gc，.git/objects/ 会留下近 2 万个
+        # 「xx/38位哈希」文件 + 256 个子目录，被原样打进 FPK。
+        # 后果：app.tgz 成员数从 ~3.4 万涨到 ~5.4 万，fnOS 安装时按目录递归
+        # 设置权限（官方确认是"遍历目录下所有文件"），应用中心超时后报
+        # "设置目录权限失败"并中止安装。v1.2.0-1 首发即因此翻车。
+        # 压包后 .git 只剩 ~40 个条目，与历史上所有可正常安装的版本一致。
+        # 注意：这里只压包，不删 .git —— install.sh 的离线分支通过
+        # `-d "$INSTALL_DIR/.git"` 判定离线包，缺了会退化成联网 git clone。
     )
+    ensure_agent_git_packed "$src_dir"
 
     touch "$marker"
     echo "$agent_ver" > "$ref_marker"

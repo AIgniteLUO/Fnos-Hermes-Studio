@@ -151,6 +151,10 @@ jobs:
             git config user.name "CI Builder"
             git add -A
             git commit -q -m "offline bundle"
+            # 必须压包：否则 .git/objects 留下近 2 万个松散对象被打进 FPK，
+            # 成员数暴涨会让 fnOS 安装时的递归权限设置超时，报"设置目录权限失败"。
+            # 详见 scripts/build-fpk.sh 的 ensure_hermes_agent_src。
+            git gc --quiet --prune=now 2>/dev/null || git repack -a -d -q 2>/dev/null || true
           )
           echo "$DESIRED_REF" > "$REF_MARKER"
           touch app/hermes-agent-src/.offline-bundle
@@ -262,6 +266,16 @@ jobs:
             echo "::error:: FPK 缺少 @hermes/shared 链接目标（apps/shared），安装将报'设置目录权限失败'，构建中止"
             exit 1
           fi
+          # 硬性校验 .git 松散对象：git init+commit 若没触发 auto gc，会把近 2 万个
+          # objects/xx/哈希 文件打进包，app.tgz 成员数从 ~3.4 万涨到 ~5.4 万。
+          # fnOS 安装时按目录递归设置权限（官方说明为"遍历目录下所有文件"），
+          # 文件数暴涨会导致应用中心超时并报"设置目录权限失败"。
+          LOOSE_GIT="$(echo "$INNER" | grep -cE '(^|/)\.git/objects/[0-9a-f]{2}/[0-9a-f]{38}$' || true)"
+          if [ "${LOOSE_GIT:-0}" -gt 200 ]; then
+            echo "::error:: FPK 内含 ${LOOSE_GIT} 个松散 git 对象（应为 0，已在构建脚本中 git gc），安装会因递归权限设置超时失败，构建中止"
+            exit 1
+          fi
+          echo "✅ .git 松散对象 ${LOOSE_GIT} 个（正常，已压包）"
 
       # 额外生成一个固定文件名，便于「总是下载最新版」。
       - name: Copy to rolling asset name
