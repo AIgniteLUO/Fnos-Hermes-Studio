@@ -4,7 +4,7 @@
 
 - 应用本体:`hermes-web-ui`(版本记录于 `config/bootstrap/hermes-studio-version.env`,CI 自动与上游 fork 的 GitHub Release([AIgniteLUO/hermes-studio](https://github.com/AIgniteLUO/hermes-studio),自维护 1.x 线)对齐,取其预构建产物;该线**未发布到 npm registry**,故不存在 npm 获取路径)。FPK **默认包含** bundled 运行时 `app/node/`(含编译好的原生 node-pty),由 CI 下载上游预构建包解包生成;安装时 `install_callback` 直接离线复制到数据目录(几秒完成),**不再依赖 fnOS 联网编译**(fnOS 缺 gcc,此前正是安装卡死的根因)。
 - 同时打包 **Hermes Agent 的 browser tools + TUI 依赖** 为 `app/hermes-agent-node/`，安装时直接复制到 Agent 目录并跳过后台 `npm install`，**首启不再长时间等待**。
-- 包版本(迭代号):记录于 `manifest`,并随每次上游更新发布到 GitHub Releases(如 `1.2.0-1`)。
+- 包版本(迭代号):记录于 `manifest`,并随每次上游更新发布到 GitHub Releases(如 `1.2.1-1`)。
 - 平台：`x86_64`（bundled 原生模块绑定 Linux x64 / Node 24 ABI）
 - 运行时依赖：`install_dep_apps=nodejs_v24`，由 fnOS 自动安装 Node.js v24
 - 默认监听端口：`8648`（绑定 `0.0.0.0`，NAS 所在局域网可直接访问）
@@ -32,7 +32,7 @@
 
 ```
 fnos-hermes-studio/
-├── manifest                         # 包元数据（version = 1.2.0-1，checksum 由构建脚本填充）
+├── manifest                         # 包元数据（version = 1.2.1-1，checksum 由构建脚本填充）
 ├── ICON.PNG / ICON_256.PNG          # 应用图标（hermes-studio 官方图标）
 ├── cmd/
 │   ├── main                         # 生命周期：start / stop / status
@@ -43,7 +43,7 @@ fnos-hermes-studio/
 ├── config/
 │   ├── privilege                    # 以 package 身份运行（hermes-studio 用户）
 │   ├── resource                     # 数据共享 + /usr/local/bin 链接
-│   ├── bootstrap/hermes-studio-version.env   # 安装的 hermes-web-ui 版本(1.2.0,跟踪上游 fork GitHub Release,auto-update 自动对齐)
+│   ├── bootstrap/hermes-studio-version.env   # 安装的 hermes-web-ui 版本(1.2.1,跟踪上游 fork GitHub Release,auto-update 自动对齐)
 │   └── bootstrap/hermes-agent-version.env    # 内嵌 Hermes Agent 的 release 标签（v2026.7.20，auto-update 自动对齐）
 ├── app/
 │   ├── bin/hermes-web-ui            # 包装脚本（设置 Node/HERMES_WEB_UI_HOME 后调用官方 CLI）
@@ -83,7 +83,7 @@ fnos-hermes-studio/
   - `hermes-web-ui`(上游 fork GitHub Release:AIgniteLUO/hermes-studio,自维护 1.x 线):取最新版本标签,构建用其预构建产物 `hermes-web-ui-<ver>.tar.gz`。
   - `hermes-agent`（GitHub release：NousResearch/hermes-agent，日期版如 `v2026.8.3`）：取最新 release 标签。
 - **动作**：任一与 `config/bootstrap/*.env` 中记录不一致时，更新 env 文件与 `manifest` 版本号，`commit` 并 `push` 到 `main` → 触发 `build.yml` 重新构建并发布新 FPK（自动发版）。
-- **版本号规则**:web-ui 主版本变化则重置 build 计数为 1,否则 build+1(如 `1.2.0-1` → web-ui 升 `1.3.0` 得 `1.3.0-1`)。
+- **版本号规则**:web-ui 主版本变化则重置 build 计数为 1,否则 build+1(如 `1.2.1-1` → web-ui 升 `1.3.0` 得 `1.3.0-1`)。
 - **手动触发**：在 GitHub Actions 页面手动运行 `Auto-update upstream versions` workflow（`workflow_dispatch`）可立即检查。
 - **关闭自动更新**：删除/停用 `auto-update.yml` 即可恢复纯手动发版。
 
@@ -102,7 +102,7 @@ fnos-hermes-studio/
 ```bash
 cd fnos-hermes-studio
 fnpack build                      # 生成 hermes-studio.fpk（项目根）
-bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复制为 dist/fnos-hermes-studio_v1.2.0-1.fpk
+bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复制为 dist/fnos-hermes-studio_v1.2.1-1.fpk
 ```
 
 `scripts/build-fpk.sh` 会优先调用 `fnpack` / `fnpack.exe`（含仓库根的 `fnpack.exe`），由官方工具产出；未找到 fnpack 时回退到方式二。
@@ -112,7 +112,7 @@ bash scripts/build-fpk.sh dist    # 自动探测并用 fnpack 构建，同时复
 ```bash
 cd fnos-hermes-studio
 bash scripts/build-fpk.sh dist    # 无 fnpack 时复刻官方双层 tar.gz 格式
-# 产物：dist/fnos-hermes-studio_v1.2.0-1.fpk
+# 产物：dist/fnos-hermes-studio_v1.2.1-1.fpk
 ```
 
 脚本复刻官方 fnpack 的双层 tar.gz 格式：内层 `app.tgz`（app/ 目录）的 MD5 写入 `manifest.checksum`，外层再打包 `manifest / cmd / config / wizard / ICON / app.tgz`。经真实 `.fpk` 样本验证，结构与官方 `fnpack` 输出一致。
@@ -120,7 +120,7 @@ bash scripts/build-fpk.sh dist    # 无 fnpack 时复刻官方双层 tar.gz 格�
 ## 安装到飞牛 NAS
 
 1. 飞牛桌面打开「应用中心」→ 右上角「设置」→「手动安装应用」。
-2. 选择生成的 `fnos-hermes-studio_v1.2.0-1.fpk`，确认安装。
+2. 选择生成的 `fnos-hermes-studio_v1.2.1-1.fpk`，确认安装。
 3. 安装向导会出现「微信渠道访问控制」步骤：
    - **默认关闭**：微信 DM 保持白名单模式（`WEIXIN_DM_POLICY=allowlist`），只有 Web UI「设置-渠道-微信」里手动添加的用户才能发消息。
    - **勾选开关**：允许所有微信用户发送消息，安装脚本会自动写入 `WEIXIN_DM_POLICY=open` 与 `WEIXIN_ALLOW_ALL_USERS=true` 到 `~/.hermes/.env`，无需再手动改配置。
