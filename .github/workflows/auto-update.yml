@@ -61,6 +61,77 @@ jobs:
             exit 1
           fi
 
+      # 断层探测：上游 fork 的 main 可能领先最新 release 标签。
+      # 构建只从 release 取预构建产物（hermes-web-ui-<ver>.tar.gz），所以「已合入 main
+      # 但没发版」的提交会被静默忽略。2026-10-20 就因此漏掉了 5 个提交，其中
+      # 1b368e2 是把 agent/memory/session 三个设置 tab 搬回系统设置页的实质改动，
+      # 直到两天后人工比对 compare 才发现。
+      #
+      # 这里比对 <最新tag>...main：领先提交里只要有一个会进产物（排除 tests/ docs/
+      # .github/ packages/desktop/ 和根级 *.md），就中止并提示先去上游发版。
+      # 之所以只认「影响产物的文件」，是因为上游 main 上常有纯测试/文档提交，
+      # 那些不需要为它们重发一个内容相同的包。
+      - name: Detect upstream main drift (unreleased commits)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="v${{ steps.detect.outputs.webui_latest }}"
+          python3 - "$TAG" <<'PY'
+          import json, os, re, sys, urllib.request
+
+          tag = sys.argv[1]
+          repo = "AIgniteLUO/hermes-studio"
+
+          def api(url):
+              req = urllib.request.Request(url, headers={
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "fnos-hermes-studio-drift-check",
+              })
+              token = os.environ.get("GH_TOKEN")
+              if token:
+                  req.add_header("Authorization", f"Bearer {token}")
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.load(r)
+
+          try:
+              d = api(f"https://api.github.com/repos/{repo}/compare/{tag}...main")
+          except Exception as e:
+              # 网络/限流问题不应阻断发版流程，只提示
+              print(f"::warning:: 无法比对上游 {tag}...main（{e}），跳过断层检测")
+              sys.exit(0)
+
+          ahead = d.get("ahead_by", 0) or 0
+          status = d.get("status", "")
+          if status != "ahead" or ahead <= 0:
+              print(f"✅ 上游 main 与最新 tag {tag} 同步（status={status}, ahead_by={ahead}）")
+              sys.exit(0)
+
+          # 不影响产物的路径：测试、文档、CI 配置、桌面端（FPK 不含）、根级 Markdown
+          IGNORE = re.compile(r"^(tests/|docs/|\.github/|packages/desktop/|[^/]+\.md$)")
+          files = [f["filename"] for f in d.get("files", [])]
+          impact = [f for f in files if not IGNORE.match(f)]
+          commits = [c["commit"]["message"].splitlines()[0] for c in d.get("commits", [])]
+
+          print(f"上游 main 领先 {tag} 共 {ahead} 个提交；变更文件 {len(files)} 个，其中影响产物 {len(impact)} 个")
+          for c in commits[:20]:
+              print(f"  · {c}")
+          if ahead > 20:
+              print(f"  ... 其余 {ahead - 20} 个提交略")
+
+          if not impact:
+              print("✅ 领先提交均不涉及产物（仅测试/文档/CI/desktop），无需发版")
+              sys.exit(0)
+
+          print("::error:: 上游 fork 存在未发版且会影响产物的提交")
+          for f in impact[:30]:
+              print(f"    {f}")
+          if len(impact) > 30:
+              print(f"    ... 共 {len(impact)} 个文件")
+          print(f"::error:: 构建只会取 release 产物，这些改动会被静默漏掉。请先在 {repo} 中 bump package.json 版本并发布新 Release，再更新 config/bootstrap/hermes-studio-version.env")
+          sys.exit(1)
+          PY
+
       - name: Compare and bump
         id: bump
         run: |

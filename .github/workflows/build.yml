@@ -20,6 +20,8 @@ on:
   # 自动更新（auto-update.yml）完成并 push 版本 bump 后，由本触发器接力构建。
   # 关键：auto-update 用默认 GITHUB_TOKEN 推送不会触发上面的 push 事件（GitHub 限制），
   # 必须用 workflow_run 才能在本仓库内接力触发构建与发布。
+  # 只在 auto-update 成功时接力：失败时它不会 push 任何东西，白跑一次构建没有意义，
+  # 而且会把「上游检测失败」伪装成一次正常的构建（2026-10-20 就是这样误导过排查）。
   workflow_run:
     workflows: ["Auto-update upstream versions"]
     types: [completed]
@@ -34,6 +36,8 @@ env:
 jobs:
   build-fpk:
     runs-on: ubuntu-latest
+    # workflow_run 触发时不区分上游结论，这里显式跳过失败的 auto-update
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
 
     steps:
       - name: Checkout code
@@ -297,7 +301,8 @@ jobs:
           tag_name: latest
           name: "Latest FPK (auto-build)"
           prerelease: true
-          overwrite: true
+          # v2 的 input 名是 overwrite_files（v1 的 overwrite 已废弃，传了会被忽略并告警）
+          overwrite_files: true
           files: |
             dist/fnos-${{ env.APP_NAME }}.fpk
             dist/fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk
@@ -354,7 +359,8 @@ jobs:
           tag_name: v${{ steps.target_version.outputs.target_version }}
           name: "Hermes Studio v${{ steps.target_version.outputs.target_version }}"
           prerelease: false
-          overwrite: true
+          # 同上：v2 用 overwrite_files，保证同版本重建时能覆盖旧附件
+          overwrite_files: true
           files: dist/fnos-${{ env.APP_NAME }}_v${{ steps.target_version.outputs.target_version }}.fpk
           body_path: /tmp/relnotes.md
 
